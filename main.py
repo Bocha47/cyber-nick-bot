@@ -6,11 +6,12 @@ import string
 import random
 import hashlib
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
+from typing import cast
 from pathlib import Path
 
-from aiogram import Bot, Dispatcher, types, Router, F
+from aiogram import Bot, Dispatcher, Router, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -27,6 +28,7 @@ from sqlalchemy import Column, Integer, String, DateTime, BigInteger, Text, crea
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import desc, func
+from sqlalchemy import cast, Date
 
 from openai import AsyncOpenAI
 import aiohttp
@@ -211,11 +213,11 @@ SessionLocal = sessionmaker(bind=engine)
 class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True)
-    telegram_id = Column(BigInteger, unique=True, nullable=False)  # ← ДОЛЖНО БЫТЬ!
+    telegram_id = Column(BigInteger, unique=True, nullable=False)
     username = Column(String(255), nullable=True)
     first_name = Column(String(255), nullable=True)
     language = Column(String(5), default="ru")
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc))
     purchased_generations = Column(Integer, default=0)
 
 
@@ -227,7 +229,7 @@ class GeneratedNick(Base):
     password = Column(String(255), nullable=True)
     style = Column(String(50), nullable=True)
     description = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc))
 
 
 class Payment(Base):
@@ -247,8 +249,6 @@ except Exception as e:
     logger.error(f"❌ Ошибка инициализации БД: {e}")
 
 
-
-# ==================== ФУНКЦИИ БАЗЫ ДАННЫХ ====================
 # ==================== ФУНКЦИИ БАЗЫ ДАННЫХ ====================
 async def get_user(telegram_id: int):
     with SessionLocal() as db:
@@ -256,6 +256,7 @@ async def get_user(telegram_id: int):
 
 
 async def get_user_language(telegram_id: int) -> str:
+    """Получает язык пользователя"""
     user = await get_user(telegram_id)
     if user and hasattr(user, 'language'):
         return user.language or "ru"
@@ -263,6 +264,7 @@ async def get_user_language(telegram_id: int) -> str:
 
 
 async def set_user_language(telegram_id: int, lang: str):
+    """Устанавливает язык пользователя"""
     with SessionLocal() as db:
         user = db.query(User).filter(User.telegram_id == telegram_id).first()
         if user:
@@ -316,10 +318,10 @@ async def get_daily_count(telegram_id: int) -> int:
         user = db.query(User).filter(User.telegram_id == telegram_id).first()
         if not user:
             return 0
-        today = datetime.utcnow().date()
+        today = datetime.now(timezone.utc).date()
         return db.query(GeneratedNick).filter(
             GeneratedNick.user_id == user.id,
-            func.date(GeneratedNick.created_at) == today
+            cast(GeneratedNick.created_at, Date) == today
         ).count()
 
 
@@ -344,7 +346,7 @@ async def use_generation(user_id: int) -> bool:
             db.commit()
             return True
 
-        today = datetime.utcnow().date()
+        today = datetime.now(timezone.utc).date()
         daily_count = db.query(GeneratedNick).filter(
             GeneratedNick.user_id == user.id,
             func.date(GeneratedNick.created_at) == today
@@ -524,6 +526,30 @@ async def generate_avatar(nick: str, style: str = "cyberpunk") -> Optional[bytes
         return None
     except Exception as e:
         logger.error(f"❌ Ошибка аватарки: {e}")
+        return None
+
+
+async def generate_avatar_free(nick: str, style: str = "cyberpunk") -> Optional[bytes]:
+    """Генерирует аватарку через Pollinations.ai (бесплатно, без токена)"""
+
+    prompt = f"Avatar for gamer named {nick}, {style} style, digital art, vibrant colors, high quality"
+    url = f"https://image.pollinations.ai/prompt/{prompt}?width=512&height=512&nologo=true"
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=30) as response:
+                if response.status == 200:
+                    image_bytes = await response.read()
+                    logger.success(f"✅ Аватарка сгенерирована для {nick} (Pollinations)")
+                    return image_bytes
+                else:
+                    logger.error(f"❌ Ошибка Pollinations: {response.status}")
+                    return None
+    except asyncio.TimeoutError:
+        logger.error("⏰ Таймаут Pollinations")
+        return None
+    except Exception as e:
+        logger.error(f"❌ Ошибка Pollinations: {e}")
         return None
 
 
@@ -796,7 +822,15 @@ async def generate_nick_ai(callback: CallbackQuery):
 
         user = await get_user(callback.from_user.id)
         if user:
-            await save_generated_nick(user.id, nick, password, style)
+            await save_generated_nick(
+                user_id=int(user.id),
+                nick=nick,
+                password=password,
+                style=style
+            )
+            logger.info(f"💾 Сохранен ник: {nick} для пользователя {user.id}")
+        else:
+            logger.error(f"❌ Пользователь не найден: {callback.from_user.id}")
 
         style_names = {
             "cool": "🎮 Крутой / Cool",
@@ -928,7 +962,9 @@ async def process_ai_description(message: Message, state: FSMContext):
                     style=style,
                     description=description
                 )
-                logger.info(f"💾 Сохранен ник: {nick}")
+                logger.info(f"💾 Сохранен ник: {nick} для пользователя {user.id}")
+        else:
+            logger.error(f"❌ Пользователь не найден: {message.from_user.id}")
 
         response = "🧠 **AI сгенерировал ники / AI generated nicknames:**\n\n"
         for i, nick in enumerate(nicks, 1):
@@ -937,11 +973,19 @@ async def process_ai_description(message: Message, state: FSMContext):
 
         await loading_msg.delete()
 
+        # ГЕНЕРАЦИЯ АВАТАРКИ
         await message.answer(
             "🎨 **Генерирую аватарку...**\n"
             "⏳ Это может занять до 30 секунд / This may take up to 30 seconds"
         )
+
+        # Пробуем через HuggingFace
         avatar = await generate_avatar(nicks[0], style)
+
+        # Если HuggingFace не работает, пробуем Pollinations
+        if not avatar:
+            logger.info("🔄 Пробуем альтернативный сервис Pollinations")
+            avatar = await generate_avatar_free(nicks[0], style)
 
         if avatar:
             await message.answer_photo(
@@ -1040,7 +1084,7 @@ async def stats_command(message: Message):
             f"💳 Платежей: {total_payments}\n"
             f"⭐ Заработано Stars: {total_stars}\n"
             f"💰 Заработано ($): ~${total_stars * 0.01:.2f}\n\n"
-            f"🕐 {datetime.utcnow().strftime('%d.%m.%Y %H:%M')} UTC"
+            f"🕐 {datetime.now(timezone.utc).strftime('%d.%m.%Y %H:%M')} UTC"
         )
 
 
