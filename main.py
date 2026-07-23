@@ -927,6 +927,14 @@ async def ai_style_selected(callback: CallbackQuery, state: FSMContext):
     style = callback.data.split("_")[1]
     await state.update_data(style=style)
 
+    # ДИАГНОСТИКА
+    logger.info(f"🔍 Выбран стиль: {style}")
+    await state.set_state(GenerateStates.waiting_for_description)
+    current_state = await state.get_state()
+    logger.info(f"🔍 Состояние установлено: {current_state}")
+    data = await state.get_data()
+    logger.info(f"🔍 Данные состояния: {data}")
+
     style_names = {
         "cyber": "💻 Киберпанк / Cyberpunk",
         "anime": "🌸 Аниме / Anime",
@@ -953,7 +961,20 @@ async def ai_style_selected(callback: CallbackQuery, state: FSMContext):
 @router.message(GenerateStates.waiting_for_description)
 async def process_ai_description(message: Message, state: FSMContext):
     """Обработка описания и генерация ников"""
+    # ДИАГНОСТИКА
+    current_state = await state.get_state()
+    logger.info(f"🔍 process_ai_description вызван!")
+    logger.info(f"🔍 Текущее состояние: {current_state}")
+    logger.info(f"🔍 Текст сообщения: {message.text}")
+    logger.info(f"🔍 Ожидаемое состояние: {GenerateStates.waiting_for_description}")
 
+    if current_state != GenerateStates.waiting_for_description:
+        logger.warning(f"⚠️ Состояние не совпадает! {current_state} != {GenerateStates.waiting_for_description}")
+        await message.answer(
+            "Пожалуйста, начните заново: /start → AI генерация → выберите стиль",
+            reply_markup=get_main_keyboard(await get_user_language(message.from_user.id))
+        )
+        return
     lang = await get_user_language(message.from_user.id)
 
     if message.text == "/skip":
@@ -1034,6 +1055,19 @@ async def process_ai_description(message: Message, state: FSMContext):
         await state.clear()
 
 
+@router.message()
+async def catch_all(message: Message, state: FSMContext):
+    """Перехват всех сообщений для диагностики"""
+    current_state = await state.get_state()
+    logger.info(f"📨 Перехвачено сообщение: '{message.text}'")
+    logger.info(f"🔍 Состояние: {current_state}")
+
+    # Если состояние активное, но обработчик не сработал
+    if current_state == GenerateStates.waiting_for_description:
+        logger.warning("⚠️ Состояние active, но обработчик не сработал!")
+        # Перенаправляем вручную
+        await process_ai_description(message, state)
+
 # ==================== ПЛАТЕЖИ ====================
 @router.callback_query(F.data == "buy_generations")
 async def process_buy_generations(callback: CallbackQuery):
@@ -1111,9 +1145,8 @@ async def stats_command(message: Message):
 
 # ==================== ЗАПУСК ====================
 async def main():
-    dp.include_router(router)
+    dp.include_router(router)  # ← ЭТО ДОЛЖНО БЫТЬ!
 
-    # Сбрасываем webhook при запуске
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         logger.info("✅ Webhook удален")
