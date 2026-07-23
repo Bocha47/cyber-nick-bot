@@ -216,7 +216,7 @@ class User(Base):
     telegram_id = Column(BigInteger, unique=True, nullable=False)
     username = Column(String(255), nullable=True)
     first_name = Column(String(255), nullable=True)
-    language = Column(String(5), default="ru")
+    language = Column(String(5), default="ru")  # ← Должно быть
     created_at = Column(DateTime, default=datetime.now(timezone.utc))
     purchased_generations = Column(Integer, default=0)
 
@@ -349,7 +349,7 @@ async def use_generation(user_id: int) -> bool:
         today = datetime.now(timezone.utc).date()
         daily_count = db.query(GeneratedNick).filter(
             GeneratedNick.user_id == user.id,
-            func.date(GeneratedNick.created_at) == today
+            cast(GeneratedNick.created_at, Date) == today
         ).count()
 
         if daily_count < 3:
@@ -718,15 +718,33 @@ async def help_command(message: Message):
 
 
 # ==================== КНОПКИ ====================
+@router.message(Command("lang"))
+async def check_language(message: Message):
+    """Проверка текущего языка пользователя"""
+    lang = await get_user_language(message.from_user.id)
+    user = await get_user(message.from_user.id)
+
+    text = f"🌐 **Информация о языке:**\n\n"
+    text += f"👤 User ID: {message.from_user.id}\n"
+    text += f"🌍 Язык в БД: {lang}\n"
+    text += f"📦 Объект пользователя: {user is not None}\n"
+    if user:
+        text += f"💾 Язык в объекте: {user.language}"
+
+    await message.answer(text, parse_mode="Markdown")
+
 @router.callback_query(F.data == "back_to_menu")
 async def back_to_menu(callback: CallbackQuery):
     lang = await get_user_language(callback.from_user.id)
+    logger.info(f"🏠 Возврат в меню для {callback.from_user.id}: язык={lang}")
+
     try:
         await callback.message.edit_text(
             i18n.get("main_menu", lang),
             reply_markup=get_main_keyboard(lang)
         )
-    except Exception:
+    except Exception as e:
+        logger.warning(f"⚠️ Не удалось отредактировать сообщение: {e}")
         await callback.message.answer(
             i18n.get("main_menu", lang),
             reply_markup=get_main_keyboard(lang)
@@ -736,6 +754,9 @@ async def back_to_menu(callback: CallbackQuery):
 
 @router.callback_query(F.data == "settings")
 async def settings_menu(callback: CallbackQuery):
+    lang = await get_user_language(callback.from_user.id)
+    logger.info(f"⚙️ Настройки для {callback.from_user.id}: язык={lang}")
+
     await callback.message.edit_text(
         "⚙️ **Настройки / Settings**\n\n"
         "🌐 Выберите язык / Choose language:",
@@ -749,20 +770,20 @@ async def settings_menu(callback: CallbackQuery):
 async def change_language(callback: CallbackQuery):
     lang = callback.data.split("_")[1]
 
+    # Сохраняем язык в БД
     await set_user_language(callback.from_user.id, lang)
 
+    # Обновляем клавиатуру
     text = "✅ Язык изменен на Русский!" if lang == "ru" else "✅ Language changed to English!"
 
-    try:
-        await callback.message.edit_text(
-            text,
-            reply_markup=get_main_keyboard(lang)
-        )
-    except Exception:
-        await callback.message.answer(
-            text,
-            reply_markup=get_main_keyboard(lang)
-        )
+    # Убеждаемся, что язык сохранился
+    saved_lang = await get_user_language(callback.from_user.id)
+    logger.info(f"🌐 Язык изменен: {saved_lang} для {callback.from_user.id}")
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=get_main_keyboard(saved_lang)
+    )
     await callback.answer()
 
 
