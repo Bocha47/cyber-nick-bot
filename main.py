@@ -7,7 +7,7 @@ import random
 import hashlib
 import json
 from datetime import datetime, timezone
-from typing import List, Optional, IO, cast
+from typing import List, Optional, cast
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher, Router, F
@@ -174,7 +174,7 @@ class I18n:
         with open(self.locales_dir / "ru.json", 'w', encoding='utf-8') as f:
             json.dump(ru, f, ensure_ascii=False, indent=2)  # type: ignore
         with open(self.locales_dir / "en.json", 'w', encoding='utf-8') as f:
-            json.dump(en, f, ensure_ascii=False, indent=2)
+            json.dump(en, f, ensure_ascii=False, indent=2) # type: ignore
         self._cache = {"ru": ru, "en": en}
         logger.info("✅ Созданы файлы локалей по умолчанию")
 
@@ -798,7 +798,7 @@ async def generate_password_callback(callback: CallbackQuery):
     password = generate_secure_password(16)
     user = await get_user(callback.from_user.id)
     if user:
-        await save_generated_nick(int(user.id), "🔐 Пароль", password)
+        await save_generated_nick(user.id, "🔐 Пароль", password) # type: ignore
 
     try:
         await callback.message.edit_text(
@@ -844,7 +844,7 @@ async def generate_nick_ai(callback: CallbackQuery):
         user = await get_user(callback.from_user.id)
         if user:
             await save_generated_nick(
-                user_id=int(user.id),  # ← Явное приведение
+                user_id=int(user.id),   # type: ignore
                 nick=nick,
                 password=password,
                 style=style
@@ -998,7 +998,7 @@ async def process_ai_description(message: Message, state: FSMContext):
         if user:
             for nick in nicks:
                 await save_generated_nick(
-                    user_id=user.id,
+                    user_id=user.id, # type: ignore
                     nick=nick,
                     password=password,
                     style=style,
@@ -1104,7 +1104,7 @@ async def process_successful_payment(message: Message):
         user = db.query(User).filter(User.telegram_id == user_id).first()
         if user:
             db.add(Payment(
-                user_id = int(user.id),
+                user_id = int(user.id), # type: ignore
                 charge_id=payment.telegram_payment_charge_id,
                 amount=amount
             ))
