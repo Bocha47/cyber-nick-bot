@@ -7,8 +7,7 @@ import random
 import hashlib
 import json
 from datetime import datetime, timezone
-from typing import List, Optional
-from typing import cast
+from typing import List, Optional, IO, cast
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher, Router, F
@@ -102,8 +101,8 @@ class I18n:
                 with open(file, 'r', encoding='utf-8') as f:
                     self._cache[lang] = json.load(f)
                 logger.info(f"✅ Загружен язык: {lang}")
-            except Exception as e:
-                logger.error(f"❌ Ошибка загрузки {file}: {e}")
+            except Exception as exc:
+                logger.error(f"❌ Ошибка загрузки {file}: {exc}")
 
     def _create_default_locales(self):
         """Создает файлы локалей по умолчанию"""
@@ -173,7 +172,7 @@ class I18n:
         }
 
         with open(self.locales_dir / "ru.json", 'w', encoding='utf-8') as f:
-            json.dump(ru, f, ensure_ascii=False, indent=2)
+            json.dump(ru, f, ensure_ascii=False, indent=2)  # type: ignore
         with open(self.locales_dir / "en.json", 'w', encoding='utf-8') as f:
             json.dump(en, f, ensure_ascii=False, indent=2)
         self._cache = {"ru": ru, "en": en}
@@ -216,7 +215,7 @@ class User(Base):
     telegram_id = Column(BigInteger, unique=True, nullable=False)
     username = Column(String(255), nullable=True)
     first_name = Column(String(255), nullable=True)
-    language = Column(String(5), default="ru")  # ← Должно быть
+    language = Column(String(5), default="ru")
     created_at = Column(DateTime, default=datetime.now(timezone.utc))
     purchased_generations = Column(Integer, default=0)
 
@@ -238,15 +237,15 @@ class Payment(Base):
     user_id = Column(Integer, nullable=False)
     charge_id = Column(String(255), nullable=False)
     amount = Column(Integer, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc))
 
 
 # Обновляем таблицу users если нужно
 try:
     Base.metadata.create_all(engine)
     logger.info("✅ База данных инициализирована")
-except Exception as e:
-    logger.error(f"❌ Ошибка инициализации БД: {e}")
+except Exception as exc:
+    logger.error(f"❌ Ошибка инициализации БД: {exc}")
 
 
 # ==================== ФУНКЦИИ БАЗЫ ДАННЫХ ====================
@@ -394,8 +393,8 @@ if OPENAI_API_KEY:
             timeout=120.0
         )
         logger.success(f"✅ OdiRouter клиент настроен (модель: {OPENAI_MODEL})")
-    except Exception as e:
-        logger.error(f"❌ Ошибка настройки OpenAI клиента: {e}")
+    except Exception as exc:
+        logger.error(f"❌ Ошибка настройки OpenAI клиента: {exc}")
 else:
     logger.warning("⚠️ OPENAI_API_KEY не найден, будет использоваться резервная генерация")
 
@@ -441,8 +440,8 @@ async def generate_nick_with_ai(style: str = "classic", count: int = 1) -> str:
             return generate_nick_from_template(style)
         return nick
 
-    except Exception as e:
-        logger.error(f"Ошибка AI-генерации: {e}")
+    except Exception as err:
+        logger.error(f"Ошибка AI-генерации: {err}")
         return generate_nick_from_template(style)
 
 
@@ -484,8 +483,8 @@ async def generate_nicks_ai(description: str, style: str = "random", count: int 
         nicks = [n.strip() for n in response.choices[0].message.content.strip().split('\n') if n.strip()]
         ai_cache[cache_key] = nicks
         return nicks[:count]
-    except Exception as e:
-        logger.error(f"Ошибка ChatGPT: {e}")
+    except Exception as err:
+        logger.error(f"Ошибка ChatGPT: {err}")
         return [generate_nick_from_template(style) for _ in range(count)]
 
 
@@ -524,8 +523,8 @@ async def generate_avatar(nick: str, style: str = "cyberpunk") -> Optional[bytes
     except asyncio.TimeoutError:
         logger.error("⏰ Таймаут генерации аватарки")
         return None
-    except Exception as e:
-        logger.error(f"❌ Ошибка аватарки: {e}")
+    except Exception as err:
+        logger.error(f"❌ Ошибка аватарки: {err}")
         return None
 
 
@@ -548,8 +547,8 @@ async def generate_avatar_free(nick: str, style: str = "cyberpunk") -> Optional[
     except asyncio.TimeoutError:
         logger.error("⏰ Таймаут Pollinations")
         return None
-    except Exception as e:
-        logger.error(f"❌ Ошибка Pollinations: {e}")
+    except Exception as err:
+        logger.error(f"❌ Ошибка Pollinations: {err}")
         return None
 
 
@@ -743,8 +742,8 @@ async def back_to_menu(callback: CallbackQuery):
             i18n.get("main_menu", lang),
             reply_markup=get_main_keyboard(lang)
         )
-    except Exception as e:
-        logger.warning(f"⚠️ Не удалось отредактировать сообщение: {e}")
+    except Exception as err:
+        logger.warning(f"⚠️ Не удалось отредактировать сообщение: {err}")
         await callback.message.answer(
             i18n.get("main_menu", lang),
             reply_markup=get_main_keyboard(lang)
@@ -799,7 +798,7 @@ async def generate_password_callback(callback: CallbackQuery):
     password = generate_secure_password(16)
     user = await get_user(callback.from_user.id)
     if user:
-        await save_generated_nick(user.id, "🔐 Пароль", password)
+        await save_generated_nick(int(user.id), "🔐 Пароль", password)
 
     try:
         await callback.message.edit_text(
@@ -841,10 +840,11 @@ async def generate_nick_ai(callback: CallbackQuery):
         nick = await generate_nick_with_ai(style, count=1)
         password = generate_secure_password(12)
 
+        # В обработчике generate_nick_ai:
         user = await get_user(callback.from_user.id)
         if user:
             await save_generated_nick(
-                user_id=int(user.id),
+                user_id=int(user.id),  # ← Явное приведение
                 nick=nick,
                 password=password,
                 style=style
@@ -877,8 +877,8 @@ async def generate_nick_ai(callback: CallbackQuery):
                 reply_markup=get_main_keyboard(lang)
             )
 
-    except Exception as e:
-        logger.error(f"❌ Ошибка AI-генерации: {e}")
+    except Exception as err:
+        logger.error(f"❌ Ошибка AI-генерации: {err}")
         try:
             await callback.message.edit_text(
                 "❌ Ошибка генерации. Попробуй еще раз.",
@@ -1044,8 +1044,8 @@ async def process_ai_description(message: Message, state: FSMContext):
 
         await state.clear()
 
-    except Exception as e:
-        logger.error(f"❌ Ошибка AI генерации: {e}")
+    except Exception as err:
+        logger.error(f"❌ Ошибка AI генерации: {err}")
         await loading_msg.delete()
         await message.answer(
             "❌ Произошла ошибка. Попробуй позже.\n"
@@ -1104,7 +1104,7 @@ async def process_successful_payment(message: Message):
         user = db.query(User).filter(User.telegram_id == user_id).first()
         if user:
             db.add(Payment(
-                user_id=user.id,
+                user_id = int(user.id),
                 charge_id=payment.telegram_payment_charge_id,
                 amount=amount
             ))
@@ -1150,8 +1150,8 @@ async def main():
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         logger.info("✅ Webhook удален")
-    except Exception as e:
-        logger.warning(f"⚠️ Не удалось удалить webhook: {e}")
+    except Exception as exc:
+        logger.warning(f"⚠️ Не удалось удалить webhook: {exc}")
 
     logger.info("🚀 CyberNick AI Bot запущен!")
     await dp.start_polling(bot)
