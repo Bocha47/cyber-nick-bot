@@ -4,10 +4,10 @@ import asyncio
 import secrets
 import string
 import random
-import hashlib
 import json
-from datetime import datetime, timezone
-from typing import List, Optional, cast
+import aiohttp
+from datetime import datetime
+from typing import Optional, List
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher, Router, F
@@ -16,182 +16,78 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup,
-    LabeledPrice, PreCheckoutQuery,
-    BufferedInputFile
+    BufferedInputFile, LabeledPrice, PreCheckoutQuery
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
-from sqlalchemy import Column, Integer, String, DateTime, BigInteger, Text, create_engine
-from sqlalchemy.orm import declarative_base
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy import desc, func
-from sqlalchemy import cast, Date
+from sqlalchemy import (
+    create_engine, Column, Integer, String, DateTime,
+    BigInteger, Text, desc, func
+)
+from sqlalchemy.orm import declarative_base, sessionmaker
 
 from openai import AsyncOpenAI
-import aiohttp
 from loguru import logger
 from dotenv import load_dotenv
 
 # ==================== ЗАГРУЗКА ПЕРЕМЕННЫХ ====================
 load_dotenv()
-
-BOT_TOKEN = os.getenv("BOT_TOKEN") or os.environ.get("BOT_TOKEN")
-
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
-    print("\n" + "=" * 60)
-    print("❌ ОШИБКА: BOT_TOKEN НЕ НАЙДЕН!")
-    print("=" * 60)
-    print("\n📌 ДЛЯ RAILWAY:")
-    print("  1. Зайдите в railway.app")
-    print("  2. Откройте ваш проект")
-    print("  3. Нажмите вкладку 'Variables'")
-    print("  4. Нажмите '+ Add Variable'")
-    print("  5. Добавьте:")
-    print("     Key:   BOT_TOKEN")
-    print("     Value: ваш_токен_от_BotFather")
-    print("  6. Нажмите 'Save'")
-    print("  7. Нажмите 'Deploy' → 'Redeploy'")
-    print("\n📌 ДЛЯ ЛОКАЛЬНОЙ РАЗРАБОТКИ:")
-    print("  Создайте файл .env с содержимым:")
-    print("  BOT_TOKEN=ваш_токен_от_BotFather")
-    print("\n" + "=" * 60)
+    print("❌ BOT_TOKEN не найден!")
     sys.exit(1)
 
-# OdiRouter API
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.odirouter.ai/v1")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "free-gpt-5.5")
-
-# HuggingFace для аватарок
-HF_TOKEN = os.getenv("HF_TOKEN") or os.environ.get("HF_TOKEN")
-
 ADMIN_IDS = [int(x) for x in (os.getenv("ADMIN_IDS") or "").split(",") if x]
-DEBUG = (os.getenv("DEBUG") or "False").lower() == "true"
+DEBUG = os.getenv("DEBUG", "False").lower() == "true"
 
-logger.success(f"✅ BOT_TOKEN загружен успешно!")
-logger.info(f"🔧 Режим DEBUG: {DEBUG}")
-logger.info(f"👤 Администраторы: {ADMIN_IDS}")
-logger.info(f"🤖 AI модель: {OPENAI_MODEL}")
-logger.info(f"🌐 AI URL: {OPENAI_BASE_URL}")
-logger.info(f"🖼️ HF_TOKEN: {'✅ Найден' if HF_TOKEN else '❌ Не найден'}")
+logger.info(f"🚀 Запуск CyberNick AI")
+logger.info(f"🤖 Модель: {OPENAI_MODEL}")
 
 
 # ==================== МУЛЬТИЯЗЫЧНОСТЬ ====================
 class I18n:
-    """Класс для работы с мультиязычностью"""
+    def __init__(self):
+        self.default = "ru"
+        self.data = {}
+        self._load()
 
-    def __init__(self, locales_dir="locales"):
-        self.locales_dir = Path(locales_dir)
-        self.default_lang = "ru"
-        self._cache = {}
-        self._load_all()
-
-    def _load_all(self):
-        """Загружает все языковые файлы"""
-        if not self.locales_dir.exists():
-            self.locales_dir.mkdir()
-            self._create_default_locales()
+    def _load(self):
+        locales_dir = Path("locales")
+        if not locales_dir.exists():
+            locales_dir.mkdir()
+            self._create_default()
             return
-
-        for file in self.locales_dir.glob("*.json"):
-            lang = file.stem
+        for f in locales_dir.glob("*.json"):
             try:
-                with open(file, 'r', encoding='utf-8') as f:
-                    self._cache[lang] = json.load(f)
-                logger.info(f"✅ Загружен язык: {lang}")
-            except Exception as exc:
-                logger.error(f"❌ Ошибка загрузки {file}: {exc}")
+                with open(f, 'r', encoding='utf-8') as file:
+                    self.data[f.stem] = json.load(file)
+            except Exception:
+                pass
 
-    def _create_default_locales(self):
-        """Создает файлы локалей по умолчанию"""
-        ru = {
-            "welcome": "👋 Привет, {name}!\n\n🤖 **CyberNick AI** — твой генератор уникальных ников и паролей!\n\n🎯 **Что я умею:**\n• 🎮 Генерировать ники в 4 стилях\n• 🧠 Придумывать через нейросети (ChatGPT)\n• 🎨 Создавать аватарки (Stable Diffusion)\n• 🔐 Генерировать надежные пароли\n• 📜 Хранить историю генераций\n\n⭐ **3 бесплатных генераций в день!**\n💰 10 Stars = 3 дополнительные генерации\n\nВыбери действие ниже 👇",
-            "main_menu": "🏠 Главное меню",
-            "back": "🔙 Назад",
-            "help": "ℹ️ Помощь",
-            "settings": "⚙️ Настройки",
-            "language": "🌐 Язык",
-            "buttons": {
-                "cool_nick": "🎮 Крутой ник",
-                "anime_nick": "🌸 Аниме ник",
-                "fantasy_nick": "🧙 Фэнтези ник",
-                "ai_generation": "🤖 AI генерация",
-                "password": "🔐 Пароль",
-                "buy_generations": "⭐ Купить генерации",
-                "history": "📜 История"
-            },
-            "ai_styles": {
-                "cyber": "💻 Киберпанк",
-                "anime": "🌸 Аниме",
-                "fantasy": "🧙 Фэнтези",
-                "random": "🎲 Рандом"
-            },
-            "generating": "🔄 **Генерирую уникальный ник через AI...**\n⏳ Подожди 3-5 секунд",
-            "nick_result": "🎯 **Твой AI-ник:**\n\n`{nick}`\n\n🔐 **Пароль:** `{password}`\n\n📝 Стиль: {style}\n🧠 Сгенерировано нейросетью\n💾 Сохранен в историю",
-            "password_result": "🔐 **Ваш надежный пароль:**\n\n`{password}`\n\n⚠️ Длина: 16 символов\n💡 Содержит: буквы, цифры, спецсимволы\n💾 Сохранен в историю",
-            "history_title": "📜 **Ваша история (последние 10):**",
-            "no_history": "📭 У вас пока нет сохраненных генераций",
-            "limit_exceeded": "❌ Бесплатные генерации на сегодня использованы! (3/3)\nКупи дополнительные за ⭐ Stars",
-            "buy_title": "⭐ Пополнение генераций",
-            "buy_description": "Купи 3 дополнительных генерации за 10 Stars",
-            "payment_success": "✅ **Оплата прошла успешно!**\n\nВам начислено **3 генерации**.\nСпасибо за поддержку! 🚀\n\nМожешь продолжать генерировать ники!"
-        }
-        en = {
-            "welcome": "👋 Hello, {name}!\n\n🤖 **CyberNick AI** is your generator of unique nicknames and passwords!\n\n🎯 **What I can do:**\n• 🎮 Generate nicknames in 4 styles\n• 🧠 Create via neural networks (ChatGPT)\n• 🎨 Generate avatars (Stable Diffusion)\n• 🔐 Generate strong passwords\n• 📜 Store generation history\n\n⭐ **3 free generations per day!**\n💰 10 Stars = 3 additional generations\n\nChoose an action below 👇",
-            "main_menu": "🏠 Main Menu",
-            "back": "🔙 Back",
-            "help": "ℹ️ Help",
-            "settings": "⚙️ Settings",
-            "language": "🌐 Language",
-            "buttons": {
-                "cool_nick": "🎮 Cool Nick",
-                "anime_nick": "🌸 Anime Nick",
-                "fantasy_nick": "🧙 Fantasy Nick",
-                "ai_generation": "🤖 AI Generation",
-                "password": "🔐 Password",
-                "buy_generations": "⭐ Buy Generations",
-                "history": "📜 History"
-            },
-            "ai_styles": {
-                "cyber": "💻 Cyberpunk",
-                "anime": "🌸 Anime",
-                "fantasy": "🧙 Fantasy",
-                "random": "🎲 Random"
-            },
-            "generating": "🔄 **Generating unique nickname via AI...**\n⏳ Wait 3-5 seconds",
-            "nick_result": "🎯 **Your AI nickname:**\n\n`{nick}`\n\n🔐 **Password:** `{password}`\n\n📝 Style: {style}\n🧠 Generated by neural network\n💾 Saved to history",
-            "password_result": "🔐 **Your strong password:**\n\n`{password}`\n\n⚠️ Length: 16 characters\n💡 Contains: letters, digits, special characters\n💾 Saved to history",
-            "history_title": "📜 **Your history (last 10):**",
-            "no_history": "📭 You have no saved generations yet",
-            "limit_exceeded": "❌ Free generations for today are used! (3/3)\nBuy additional for ⭐ Stars",
-            "buy_title": "⭐ Buy Generations",
-            "buy_description": "Buy 3 additional generations for 10 Stars",
-            "payment_success": "✅ **Payment successful!**\n\nYou have received **3 generations**.\nThank you for your support! 🚀\n\nYou can continue generating nicknames!"
-        }
-
-        with open(self.locales_dir / "ru.json", 'w', encoding='utf-8') as f:
-            json.dump(ru, f, ensure_ascii=False, indent=2)  # type: ignore
-        with open(self.locales_dir / "en.json", 'w', encoding='utf-8') as f:
-            json.dump(en, f, ensure_ascii=False, indent=2) # type: ignore
-        self._cache = {"ru": ru, "en": en}
-        logger.info("✅ Созданы файлы локалей по умолчанию")
+    def _create_default(self):
+        ru = {"welcome": "Привет!", "main_menu": "Главное меню"}
+        en = {"welcome": "Hello!", "main_menu": "Main Menu"}
+        with open("locales/ru.json", 'w', encoding='utf-8') as f:
+            json.dump(ru, f, ensure_ascii=False)
+        with open("locales/en.json", 'w', encoding='utf-8') as f:
+            json.dump(en, f, ensure_ascii=False)
+        self.data = {"ru": ru, "en": en}
 
     def get(self, key: str, lang: str = None, **kwargs) -> str:
-        """Получает текст по ключу и языку"""
-        if not lang or lang not in self._cache:
-            lang = self.default_lang
-
+        if not lang or lang not in self.data:
+            lang = self.default
         parts = key.split('.')
-        value = self._cache.get(lang, {})
-
-        for part in parts:
+        value = self.data.get(lang, {})
+        for p in parts:
             if isinstance(value, dict):
-                value = value.get(part, key)
+                value = value.get(p, key)
             else:
                 return key
-
         if kwargs:
             try:
                 return value.format(**kwargs)
@@ -200,35 +96,33 @@ class I18n:
         return value
 
 
-# Создаем глобальный объект
 i18n = I18n()
 
 # ==================== БАЗА ДАННЫХ ====================
 Base = declarative_base()
 engine = create_engine("sqlite:///./cyber_nick.db", echo=DEBUG)
-SessionLocal = sessionmaker(bind=engine)
+Session = sessionmaker(bind=engine)
 
 
 class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True)
     telegram_id = Column(BigInteger, unique=True, nullable=False)
-    username = Column(String(255), nullable=True)
-    first_name = Column(String(255), nullable=True)
+    username = Column(String(255))
+    first_name = Column(String(255))
     language = Column(String(5), default="ru")
-    created_at = Column(DateTime, default=datetime.now(timezone.utc))
-    purchased_generations = Column(Integer, default=0)
+    purchased = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
-class GeneratedNick(Base):
-    __tablename__ = "generated_nicks"
+class Nick(Base):
+    __tablename__ = "nicks"
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, nullable=False)
     nick = Column(String(255), nullable=False)
-    password = Column(String(255), nullable=True)
-    style = Column(String(50), nullable=True)
-    description = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.now(timezone.utc))
+    password = Column(String(255))
+    style = Column(String(50))
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
 class Payment(Base):
@@ -237,400 +131,161 @@ class Payment(Base):
     user_id = Column(Integer, nullable=False)
     charge_id = Column(String(255), nullable=False)
     amount = Column(Integer, nullable=False)
-    created_at = Column(DateTime, default=datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 
-# Обновляем таблицу users если нужно
-try:
-    Base.metadata.create_all(engine)
-    logger.info("✅ База данных инициализирована")
-except Exception as exc:
-    logger.error(f"❌ Ошибка инициализации БД: {exc}")
+Base.metadata.create_all(engine)
+logger.info("✅ База данных создана")
 
 
-# ==================== ФУНКЦИИ БАЗЫ ДАННЫХ ====================
-async def get_user(telegram_id: int):
-    with SessionLocal() as db:
+# ==================== ФУНКЦИИ БАЗЫ ====================
+def get_user_db(telegram_id: int):
+    with Session() as db:
         return db.query(User).filter(User.telegram_id == telegram_id).first()
 
 
-async def get_user_language(telegram_id: int) -> str:
-    """Получает язык пользователя"""
-    user = await get_user(telegram_id)
-    if user and hasattr(user, 'language'):
-        return user.language or "ru"
-    return "ru"
-
-
-async def set_user_language(telegram_id: int, lang: str):
-    """Устанавливает язык пользователя"""
-    with SessionLocal() as db:
-        user = db.query(User).filter(User.telegram_id == telegram_id).first()
-        if user:
-            user.language = lang
-            db.commit()
-            return True
-    return False
-
-
-async def create_user(telegram_id: int, username: str = None, first_name: str = None):
-    with SessionLocal() as db:
-        user = User(
-            telegram_id=telegram_id,
-            username=username,
-            first_name=first_name,
-            language="ru"
-        )
+def create_user_db(telegram_id: int, username: str = None, first_name: str = None):
+    with Session() as db:
+        user = User(telegram_id=telegram_id, username=username, first_name=first_name)
         db.add(user)
         db.commit()
-        db.refresh(user)
         return user
 
 
-async def save_generated_nick(user_id: int, nick: str, password: str = None, style: str = None,
-                              description: str = None):
-    with SessionLocal() as db:
-        record = GeneratedNick(
-            user_id=user_id,
-            nick=nick,
-            password=password,
-            style=style,
-            description=description
-        )
+def save_nick_db(user_id: int, nick: str, password: str = None, style: str = None):
+    with Session() as db:
+        record = Nick(user_id=user_id, nick=nick, password=password, style=style)
         db.add(record)
         db.commit()
         return True
 
 
-async def get_user_history(telegram_id: int, limit: int = 10):
-    with SessionLocal() as db:
-        user = db.query(User).filter(User.telegram_id == telegram_id).first()
-        if not user:
-            return []
-        return db.query(GeneratedNick).filter(
-            GeneratedNick.user_id == user.id
-        ).order_by(desc(GeneratedNick.created_at)).limit(limit).all()
+def get_history_db(user_id: int, limit: int = 10):
+    with Session() as db:
+        return db.query(Nick).filter(Nick.user_id == user_id).order_by(desc(Nick.created_at)).limit(limit).all()
 
 
-async def get_daily_count(telegram_id: int) -> int:
-    with SessionLocal() as db:
-        user = db.query(User).filter(User.telegram_id == telegram_id).first()
-        if not user:
-            return 0
-        today = datetime.now(timezone.utc).date()
-        return db.query(GeneratedNick).filter(
-            GeneratedNick.user_id == user.id,
-            cast(GeneratedNick.created_at, Date) == today
+def get_daily_count_db(user_id: int) -> int:
+    with Session() as db:
+        today = datetime.utcnow().date()
+        return db.query(Nick).filter(
+            Nick.user_id == user_id,
+            func.date(Nick.created_at) == today
         ).count()
 
 
-async def add_generations_to_user(user_id: int, count: int):
-    with SessionLocal() as db:
-        user = db.query(User).filter(User.telegram_id == user_id).first()
+def add_purchased_db(telegram_id: int, count: int):
+    with Session() as db:
+        user = db.query(User).filter(User.telegram_id == telegram_id).first()
         if user:
-            user.purchased_generations += count
+            user.purchased += count
             db.commit()
             return True
     return False
 
 
-async def use_generation(user_id: int) -> bool:
-    with SessionLocal() as db:
-        user = db.query(User).filter(User.telegram_id == user_id).first()
+def use_generation_db(telegram_id: int) -> bool:
+    with Session() as db:
+        user = db.query(User).filter(User.telegram_id == telegram_id).first()
         if not user:
             return False
-
-        if user.purchased_generations > 0:
-            user.purchased_generations -= 1
+        if user.purchased > 0:
+            user.purchased -= 1
             db.commit()
             return True
-
-        today = datetime.now(timezone.utc).date()
-        daily_count = db.query(GeneratedNick).filter(
-            GeneratedNick.user_id == user.id,
-            cast(GeneratedNick.created_at, Date) == today
+        today = datetime.utcnow().date()
+        count = db.query(Nick).filter(
+            Nick.user_id == user.id,
+            func.date(Nick.created_at) == today
         ).count()
-
-        if daily_count < 3:
-            return True
-
-        return False
+        return count < 3
 
 
 # ==================== ГЕНЕРАТОРЫ ====================
-def generate_secure_password(length: int = 16) -> str:
-    alphabet = string.ascii_letters + string.digits + "!@#$%&*"
-    return ''.join(secrets.choice(alphabet) for _ in range(length))
+def gen_password(length: int = 16) -> str:
+    chars = string.ascii_letters + string.digits + "!@#$%&*"
+    return ''.join(secrets.choice(chars) for _ in range(length))
 
 
-def generate_nick_from_template(style: str = "classic") -> str:
-    adjectives = [
-        "Cyber", "Neon", "Ghost", "Shadow", "Dark", "Light", "Storm", "Ice",
-        "Crimson", "Silver", "Wild", "Savage", "Phantom", "Venom", "Fury", "Titan"
-    ]
-    nouns = [
-        "Pulse", "Core", "Blade", "Phoenix", "Wolf", "Hawk", "Dragon",
-        "Knight", "Fury", "Storm", "Titan", "Raven", "Viper", "Eagle", "Lynx"
-    ]
+async def gen_nick_ai(style: str = "cool") -> str:
+    if not OPENAI_API_KEY:
+        return f"{random.choice(['Cyber', 'Neon'])}{random.randint(10, 99)}"
 
-    if style == "anime":
-        return f"{random.choice(nouns)}_Kun{random.randint(10, 99)}"
-    elif style == "cyber" or style == "cool":
-        return f"xX_{random.choice(adjectives)}_{random.randint(100, 999)}_Xx"
-    elif style == "fantasy":
-        return f"{random.choice(adjectives)}{random.choice(nouns)}"
-    else:
-        return f"{random.choice(adjectives)}{random.choice(nouns)}{random.randint(10, 99)}"
-
-
-# ==================== AI ГЕНЕРАЦИЯ ====================
-client = None
-if OPENAI_API_KEY:
-    try:
-        client = AsyncOpenAI(
-            base_url=OPENAI_BASE_URL,
-            api_key=OPENAI_API_KEY,
-            timeout=120.0
-        )
-        logger.success(f"✅ OdiRouter клиент настроен (модель: {OPENAI_MODEL})")
-    except Exception as exc:
-        logger.error(f"❌ Ошибка настройки OpenAI клиента: {exc}")
-else:
-    logger.warning("⚠️ OPENAI_API_KEY не найден, будет использоваться резервная генерация")
-
-ai_cache = {}
-
-
-async def generate_nick_with_ai(style: str = "classic", count: int = 1) -> str:
-    """Генерирует ник через AI с указанным стилем"""
-
-    style_map = {
-        "cool": "крутой, дерзкий, киберпанк, неон",
-        "anime": "аниме, японский, кавайный или тёмный",
-        "fantasy": "фэнтези, магия, драконы, эльфы",
-        "classic": "уникальный, запоминающийся"
+    styles = {
+        "cool": "крутой, киберпанк",
+        "anime": "аниме, японский",
+        "fantasy": "фэнтези, магия"
     }
-
-    if not client:
-        return generate_nick_from_template(style)
-
-    prompt = f"""Придумай 1 уникальный ник в стиле {style_map.get(style, 'классический')}.
-
-Требования:
-- Длина: 5-20 символов
-- Используй буквы, цифры, символы _ - .
-- Ник должен быть запоминающимся и креативным
-- Не используй оскорбительные слова
-
-ОТВЕТЬ ТОЛЬКО НИКОМ, БЕЗ ОБЪЯСНЕНИЙ!"""
-
+    client = AsyncOpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL, timeout=30)
     try:
-        response = await client.chat.completions.create(
+        resp = await client.chat.completions.create(
             model=OPENAI_MODEL,
             messages=[
-                {"role": "system", "content": "Ты — креативный генератор никнеймов. Отвечаешь только одним ником."},
-                {"role": "user", "content": prompt}
+                {"role": "system", "content": "Ты генератор ников. Отвечай только одним ником."},
+                {"role": "user",
+                 "content": f"Придумай 1 ник в стиле {styles.get(style, 'крутой')}. Длина 5-20 символов."}
             ],
             temperature=0.9,
-            max_tokens=50
+            max_tokens=30
         )
-
-        nick = response.choices[0].message.content.strip()
-        if not nick or len(nick) > 30:
-            return generate_nick_from_template(style)
+        nick = resp.choices[0].message.content.strip()
+        if len(nick) > 30 or not nick:
+            return f"{random.choice(['Cyber', 'Neon'])}{random.randint(10, 99)}"
         return nick
-
-    except Exception as err:
-        logger.error(f"Ошибка AI-генерации: {err}")
-        return generate_nick_from_template(style)
-
-
-async def generate_nicks_ai(description: str, style: str = "random", count: int = 3) -> List[str]:
-    if not client:
-        return [generate_nick_from_template(style) for _ in range(count)]
-
-    cache_key = hashlib.md5(f"{description}_{style}_{count}".encode()).hexdigest()
-    if cache_key in ai_cache:
-        return ai_cache[cache_key]
-
-    style_map = {
-        "cyber": "киберпанк, неон, технологии, футуризм",
-        "anime": "аниме, японский стиль, кавайный или тёмный",
-        "fantasy": "фэнтези, магия, драконы, эльфы",
-        "random": "любой стиль"
-    }
-
-    prompt = f"""Придумай {count} уникальных ников.
-Описание: {description}
-Стиль: {style_map.get(style, 'любой')}
-
-Требования:
-- Длина: 5-20 символов
-- Используй буквы, цифры, символы _ - .
-- Ники должны быть запоминающимися
-- ОТВЕТЬ ТОЛЬКО СПИСКОМ НИКОВ, КАЖДЫЙ С НОВОЙ СТРОКИ!"""
-
-    try:
-        response = await client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=[
-                {"role": "system", "content": "Ты — генератор никнеймов. Отвечаешь только списком ников."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.9,
-            max_tokens=200
-        )
-        nicks = [n.strip() for n in response.choices[0].message.content.strip().split('\n') if n.strip()]
-        ai_cache[cache_key] = nicks
-        return nicks[:count]
-    except Exception as err:
-        logger.error(f"Ошибка ChatGPT: {err}")
-        return [generate_nick_from_template(style) for _ in range(count)]
+    except Exception as e:
+        logger.error(f"AI error: {e}")
+        return f"{random.choice(['Cyber', 'Neon'])}{random.randint(10, 99)}"
 
 
-# ==================== ГЕНЕРАЦИЯ АВАТАРОК ====================
-async def generate_avatar(nick: str, style: str = "cyberpunk") -> Optional[bytes]:
-    """Генерирует аватарку через HuggingFace API"""
-
-    prompt = f"Avatar for gamer named {nick}, {style} style, digital art, vibrant colors, high quality, 512x512"
-
-    headers = {}
-    if HF_TOKEN:
-        headers["Authorization"] = f"Bearer {HF_TOKEN}"
-
+async def gen_avatar(nick: str) -> Optional[bytes]:
+    """Генерация аватарки через Pollinations.ai (бесплатно, без токена)"""
+    prompt = f"Avatar for {nick}, digital art, vibrant"
+    url = f"https://image.pollinations.ai/prompt/{prompt}?width=512&height=512"
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(
-                    "https://api-inference.huggingface.co/models/runwayml/stable-diffusion-v1-5",
-                    json={
-                        "inputs": prompt,
-                        "parameters": {
-                            "negative_prompt": "ugly, deformed, blurry, low quality, realistic photo",
-                            "guidance_scale": 7.5
-                        }
-                    },
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=60)
-            ) as response:
-                if response.status == 200:
-                    image_bytes = await response.read()
-                    logger.success(f"✅ Аватарка сгенерирована для {nick}")
-                    return image_bytes
-                else:
-                    error_text = await response.text()
-                    logger.error(f"❌ Ошибка HuggingFace: {response.status} - {error_text[:200]}")
-                    return None
-    except asyncio.TimeoutError:
-        logger.error("⏰ Таймаут генерации аватарки")
-        return None
-    except Exception as err:
-        logger.error(f"❌ Ошибка аватарки: {err}")
-        return None
-
-
-async def generate_avatar_free(nick: str, style: str = "cyberpunk") -> Optional[bytes]:
-    """Генерирует аватарку через Pollinations.ai (бесплатно, без токена)"""
-
-    prompt = f"Avatar for gamer named {nick}, {style} style, digital art, vibrant colors, high quality"
-    url = f"https://image.pollinations.ai/prompt/{prompt}?width=512&height=512&nologo=true"
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=30) as response:
-                if response.status == 200:
-                    image_bytes = await response.read()
-                    logger.success(f"✅ Аватарка сгенерирована для {nick} (Pollinations)")
-                    return image_bytes
-                else:
-                    logger.error(f"❌ Ошибка Pollinations: {response.status}")
-                    return None
-    except asyncio.TimeoutError:
-        logger.error("⏰ Таймаут Pollinations")
-        return None
-    except Exception as err:
-        logger.error(f"❌ Ошибка Pollinations: {err}")
-        return None
+            async with session.get(url, timeout=30) as resp:
+                if resp.status == 200:
+                    return await resp.read()
+    except Exception as e:
+        logger.error(f"Avatar error: {e}")
+    return None
 
 
 # ==================== КЛАВИАТУРЫ ====================
-def get_main_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
-    """Главная клавиатура с поддержкой языка"""
-    builder = InlineKeyboardBuilder()
-
-    builder.button(
-        text=i18n.get("buttons.cool_nick", lang),
-        callback_data="gen_cool"
-    )
-    builder.button(
-        text=i18n.get("buttons.anime_nick", lang),
-        callback_data="gen_anime"
-    )
-    builder.button(
-        text=i18n.get("buttons.fantasy_nick", lang),
-        callback_data="gen_fantasy"
-    )
-    builder.button(
-        text=i18n.get("buttons.ai_generation", lang),
-        callback_data="gen_ai"
-    )
-    builder.button(
-        text=i18n.get("buttons.password", lang),
-        callback_data="gen_password"
-    )
-    builder.button(
-        text=i18n.get("buttons.buy_generations", lang),
-        callback_data="buy_generations"
-    )
-    builder.button(
-        text=i18n.get("buttons.history", lang),
-        callback_data="history"
-    )
-    builder.button(
-        text=i18n.get("settings", lang),
-        callback_data="settings"
-    )
-    builder.adjust(2, 2, 2, 2)
-    return builder.as_markup()
+def main_kb(lang: str = "ru") -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="🤖 AI генерация", callback_data="gen_ai")
+    b.button(text="🔐 Пароль", callback_data="gen_pass")
+    b.button(text="📜 История", callback_data="history")
+    b.button(text="⭐ Купить", callback_data="buy")
+    b.button(text="⚙️ Настройки", callback_data="settings")
+    b.adjust(2, 2, 1)
+    return b.as_markup()
 
 
-def get_ai_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
-    """Клавиатура выбора стиля AI"""
-    builder = InlineKeyboardBuilder()
-    styles = [
-        ("cyber", i18n.get("ai_styles.cyber", lang)),
-        ("anime", i18n.get("ai_styles.anime", lang)),
-        ("fantasy", i18n.get("ai_styles.fantasy", lang)),
-        ("random", i18n.get("ai_styles.random", lang))
-    ]
-    for value, text in styles:
-        builder.button(text=text, callback_data=f"ai_{value}")
-    builder.button(text=i18n.get("back", lang), callback_data="back_to_menu")
-    builder.adjust(2, 2, 1)
-    return builder.as_markup()
+def style_kb(lang: str = "ru") -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="💻 Киберпанк", callback_data="style_cool")
+    b.button(text="🌸 Аниме", callback_data="style_anime")
+    b.button(text="🧙 Фэнтези", callback_data="style_fantasy")
+    b.button(text="🔙 Назад", callback_data="back")
+    b.adjust(2, 1)
+    return b.as_markup()
 
 
-def get_payment_keyboard(lang: str = "ru") -> InlineKeyboardMarkup:
-    """Клавиатура оплаты"""
-    builder = InlineKeyboardBuilder()
-    builder.button(text="⭐ Оплатить 10 Stars", pay=True)
-    builder.button(text=i18n.get("back", lang), callback_data="back_to_menu")
-    builder.adjust(1)
-    return builder.as_markup()
-
-
-def get_language_keyboard() -> InlineKeyboardMarkup:
-    """Клавиатура выбора языка"""
-    builder = InlineKeyboardBuilder()
-    builder.button(text="🇷🇺 Русский", callback_data="lang_ru")
-    builder.button(text="🇬🇧 English", callback_data="lang_en")
-    builder.button(text="🔙 Назад", callback_data="back_to_menu")
-    builder.adjust(2, 1)
-    return builder.as_markup()
+def lang_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="🇷🇺 Русский", callback_data="lang_ru")
+    b.button(text="🇬🇧 English", callback_data="lang_en")
+    b.button(text="🔙 Назад", callback_data="back")
+    b.adjust(2, 1)
+    return b.as_markup()
 
 
 # ==================== СОСТОЯНИЯ ====================
-class GenerateStates(StatesGroup):
-    waiting_for_description = State()
+class Form(StatesGroup):
+    waiting_style = State()
+    waiting_description = State()
 
 
 # ==================== БОТ ====================
@@ -639,521 +294,200 @@ dp = Dispatcher()
 router = Router()
 
 
-# ==================== КОМАНДЫ ====================
+# ==================== ОБРАБОТЧИКИ ====================
 @router.message(Command("start"))
-async def start_command(message: Message):
-    user = await get_user(message.from_user.id)
+async def start(msg: Message):
+    user = get_user_db(msg.from_user.id)
     if not user:
-        user = await create_user(
-            message.from_user.id,
-            message.from_user.username,
-            message.from_user.first_name
-        )
-        logger.info(f"👤 Новый пользователь: {user.telegram_id}")
-
-    lang = await get_user_language(message.from_user.id)
-
-    await message.answer(
-        i18n.get("welcome", lang, name=message.from_user.first_name),
-        reply_markup=get_main_keyboard(lang),
-        parse_mode="Markdown"
+        user = create_user_db(msg.from_user.id, msg.from_user.username, msg.from_user.first_name)
+    lang = user.language if user else "ru"
+    await msg.answer(
+        i18n.get("welcome", lang, name=msg.from_user.first_name),
+        reply_markup=main_kb(lang)
     )
 
 
-@router.message(Command("buy"))
-async def buy_command(message: Message):
-    lang = await get_user_language(message.from_user.id)
-    prices = [LabeledPrice(label="⭐ 3 генерации", amount=1000)]
-    await message.answer_invoice(
-        title=i18n.get("buy_title", lang),
-        description=i18n.get("buy_description", lang),
-        prices=prices,
-        provider_token="",
-        payload="buy_3_generations",
-        currency="XTR",
-        reply_markup=get_payment_keyboard(lang)
-    )
-
-
-@router.message(Command("history"))
-async def history_command(message: Message):
-    lang = await get_user_language(message.from_user.id)
-    history = await get_user_history(message.from_user.id, limit=10)
-
-    if not history:
-        await message.answer(
-            i18n.get("no_history", lang),
-            reply_markup=get_main_keyboard(lang)
-        )
-        return
-
-    text = i18n.get("history_title", lang) + "\n\n"
-    for i, record in enumerate(history, 1):
-        text += f"{i}. `{record.nick}`"
-        if record.password:
-            text += f" | Пароль: `{record.password}`"
-        text += f"\n   🕐 {record.created_at.strftime('%d.%m.%Y %H:%M')}\n"
-
-    await message.answer(text, reply_markup=get_main_keyboard(lang))
-
-
-@router.message(Command("help"))
-async def help_command(message: Message):
-    lang = await get_user_language(message.from_user.id)
-    await message.answer(
-        f"ℹ️ **{i18n.get('help', lang)}**\n\n"
-        "📌 **Команды / Commands:**\n"
-        "/start - Главное меню / Main Menu\n"
-        "/buy - Купить генерации / Buy Generations\n"
-        "/history - История / History\n"
-        "/help - Помощь / Help\n\n"
-        "📌 **Как использовать / How to use:**\n"
-        "1. Нажми на кнопку / Press a button\n"
-        "2. Получи уникальный ник / Get unique nickname\n"
-        "3. Для AI-генерации напиши описание / For AI generation write description\n\n"
-        "❓ Вопросы / Questions: @ваш_username",
-        reply_markup=get_main_keyboard(lang)
-    )
-
-
-# ==================== КНОПКИ ====================
-@router.message(Command("lang"))
-async def check_language(message: Message):
-    """Проверка текущего языка пользователя"""
-    lang = await get_user_language(message.from_user.id)
-    user = await get_user(message.from_user.id)
-
-    text = f"🌐 **Информация о языке:**\n\n"
-    text += f"👤 User ID: {message.from_user.id}\n"
-    text += f"🌍 Язык в БД: {lang}\n"
-    text += f"📦 Объект пользователя: {user is not None}\n"
+@router.callback_query(F.data == "back")
+async def back(cb: CallbackQuery, state: FSMContext):
+    await state.clear()
+    lang = "ru"
+    user = get_user_db(cb.from_user.id)
     if user:
-        text += f"💾 Язык в объекте: {user.language}"
-
-    await message.answer(text, parse_mode="Markdown")
-
-@router.callback_query(F.data == "back_to_menu")
-async def back_to_menu(callback: CallbackQuery):
-    lang = await get_user_language(callback.from_user.id)
-    logger.info(f"🏠 Возврат в меню для {callback.from_user.id}: язык={lang}")
-
-    try:
-        await callback.message.edit_text(
-            i18n.get("main_menu", lang),
-            reply_markup=get_main_keyboard(lang)
-        )
-    except Exception as err:
-        logger.warning(f"⚠️ Не удалось отредактировать сообщение: {err}")
-        await callback.message.answer(
-            i18n.get("main_menu", lang),
-            reply_markup=get_main_keyboard(lang)
-        )
-    await callback.answer()
+        lang = user.language
+    await cb.message.edit_text(i18n.get("main_menu", lang), reply_markup=main_kb(lang))
+    await cb.answer()
 
 
 @router.callback_query(F.data == "settings")
-async def settings_menu(callback: CallbackQuery):
-    lang = await get_user_language(callback.from_user.id)
-    logger.info(f"⚙️ Настройки для {callback.from_user.id}: язык={lang}")
-
-    await callback.message.edit_text(
-        "⚙️ **Настройки / Settings**\n\n"
-        "🌐 Выберите язык / Choose language:",
-        reply_markup=get_language_keyboard(),
-        parse_mode="Markdown"
-    )
-    await callback.answer()
+async def settings(cb: CallbackQuery):
+    await cb.message.edit_text("🌐 Выберите язык:", reply_markup=lang_kb())
+    await cb.answer()
 
 
 @router.callback_query(F.data.startswith("lang_"))
-async def change_language(callback: CallbackQuery):
-    lang = callback.data.split("_")[1]
-
-    # Сохраняем язык в БД
-    await set_user_language(callback.from_user.id, lang)
-
-    # Обновляем клавиатуру
-    text = "✅ Язык изменен на Русский!" if lang == "ru" else "✅ Language changed to English!"
-
-    # Убеждаемся, что язык сохранился
-    saved_lang = await get_user_language(callback.from_user.id)
-    logger.info(f"🌐 Язык изменен: {saved_lang} для {callback.from_user.id}")
-
-    await callback.message.edit_text(
-        text,
-        reply_markup=get_main_keyboard(saved_lang)
-    )
-    await callback.answer()
-
-
-@router.callback_query(F.data == "history")
-async def history_callback(callback: CallbackQuery):
-    await history_command(callback.message)
-    await callback.answer()
-
-
-@router.callback_query(F.data == "gen_password")
-async def generate_password_callback(callback: CallbackQuery):
-    lang = await get_user_language(callback.from_user.id)
-    password = generate_secure_password(16)
-    user = await get_user(callback.from_user.id)
-    if user:
-        await save_generated_nick(user.id, "🔐 Пароль", password) # type: ignore
-
-    try:
-        await callback.message.edit_text(
-            i18n.get("password_result", lang, password=password),
-            reply_markup=get_main_keyboard(lang)
-        )
-    except Exception:
-        await callback.message.answer(
-            i18n.get("password_result", lang, password=password),
-            reply_markup=get_main_keyboard(lang)
-        )
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("gen_"))
-async def generate_nick_ai(callback: CallbackQuery):
-    """Генерация ника через AI"""
-    lang = await get_user_language(callback.from_user.id)
-    style = callback.data.split("_")[1]
-
-    if not await use_generation(callback.from_user.id):
-        await callback.answer(
-            i18n.get("limit_exceeded", lang),
-            show_alert=True
-        )
-        return
-
-    try:
-        await callback.message.edit_text(
-            i18n.get("generating", lang),
-            reply_markup=None
-        )
-    except Exception:
-        await callback.message.answer(
-            i18n.get("generating", lang)
-        )
-
-    try:
-        nick = await generate_nick_with_ai(style, count=1)
-        password = generate_secure_password(12)
-
-        # В обработчике generate_nick_ai:
-        user = await get_user(callback.from_user.id)
+async def set_lang(cb: CallbackQuery):
+    lang = cb.data.split("_")[1]
+    with Session() as db:
+        user = db.query(User).filter(User.telegram_id == cb.from_user.id).first()
         if user:
-            await save_generated_nick(
-                user_id=int(user.id),   # type: ignore
-                nick=nick,
-                password=password,
-                style=style
-            )
-            logger.info(f"💾 Сохранен ник: {nick} для пользователя {user.id}")
-        else:
-            logger.error(f"❌ Пользователь не найден: {callback.from_user.id}")
-
-        style_names = {
-            "cool": "🎮 Крутой / Cool",
-            "anime": "🌸 Аниме / Anime",
-            "fantasy": "🧙 Фэнтези / Fantasy"
-        }
-
-        result_text = i18n.get(
-            "nick_result", lang,
-            nick=nick,
-            password=password,
-            style=style_names.get(style, style)
-        )
-
-        try:
-            await callback.message.edit_text(
-                result_text,
-                reply_markup=get_main_keyboard(lang)
-            )
-        except Exception:
-            await callback.message.answer(
-                result_text,
-                reply_markup=get_main_keyboard(lang)
-            )
-
-    except Exception as err:
-        logger.error(f"❌ Ошибка AI-генерации: {err}")
-        try:
-            await callback.message.edit_text(
-                "❌ Ошибка генерации. Попробуй еще раз.",
-                reply_markup=get_main_keyboard(lang)
-            )
-        except Exception:
-            await callback.message.answer(
-                "❌ Ошибка генерации. Попробуй еще раз.",
-                reply_markup=get_main_keyboard(lang)
-            )
-
-    await callback.answer()
+            user.language = lang
+            db.commit()
+    await cb.message.edit_text(
+        "✅ Язык изменен!" if lang == "ru" else "✅ Language changed!",
+        reply_markup=main_kb(lang)
+    )
+    await cb.answer()
 
 
 @router.callback_query(F.data == "gen_ai")
-async def ai_generation_start(callback: CallbackQuery, state: FSMContext):
-    """Начало AI-генерации с описанием"""
-
-    lang = await get_user_language(callback.from_user.id)
-
-    if not await use_generation(callback.from_user.id):
-        await callback.answer(
-            i18n.get("limit_exceeded", lang),
-            show_alert=True
-        )
+async def gen_ai_start(cb: CallbackQuery, state: FSMContext):
+    user = get_user_db(cb.from_user.id)
+    lang = user.language if user else "ru"
+    if not use_generation_db(cb.from_user.id):
+        await cb.answer(i18n.get("limit_exceeded", lang), show_alert=True)
         return
-
-    try:
-        await callback.message.delete()
-    except Exception:
-        pass
-
-    await callback.message.answer(
-        "🤖 **AI-генерация ников**\n\n"
-        "Выбери стиль / Choose style:",
-        reply_markup=get_ai_keyboard(lang)
-    )
-    await callback.answer()
+    await state.set_state(Form.waiting_style)
+    await cb.message.edit_text("🎨 Выбери стиль:", reply_markup=style_kb(lang))
+    await cb.answer()
 
 
-@router.callback_query(F.data.startswith("ai_"))
-async def ai_style_selected(callback: CallbackQuery, state: FSMContext):
-    """Выбор стиля для AI-генерации"""
-
-    lang = await get_user_language(callback.from_user.id)
-    style = callback.data.split("_")[1]
+@router.callback_query(F.data.startswith("style_"))
+async def choose_style(cb: CallbackQuery, state: FSMContext):
+    style = cb.data.split("_")[1]
     await state.update_data(style=style)
-
-    # ДИАГНОСТИКА
-    logger.info(f"🔍 Выбран стиль: {style}")
-    await state.set_state(GenerateStates.waiting_for_description)
-    current_state = await state.get_state()
-    logger.info(f"🔍 Состояние установлено: {current_state}")
-    data = await state.get_data()
-    logger.info(f"🔍 Данные состояния: {data}")
-
-    style_names = {
-        "cyber": "💻 Киберпанк / Cyberpunk",
-        "anime": "🌸 Аниме / Anime",
-        "fantasy": "🧙 Фэнтези / Fantasy",
-        "random": "🎲 Рандом / Random"
-    }
-
-    await callback.message.edit_text(
-        f"✅ Выбран стиль / Selected style: **{style_names.get(style, style)}**\n\n"
-        "📝 **Напиши описание** желаемого ника.\n"
-        "**Write a description** of the desired nickname.\n\n"
-        "Примеры / Examples:\n"
-        "• 'для стримера, люблю космос' / 'for streamer, I love space'\n"
-        "• 'для игр, агрессивный' / 'for games, aggressive'\n"
-        "• 'для соцсетей, милый' / 'for social networks, cute'\n\n"
-        "Или нажми /skip для случайного / Or press /skip for random",
-        parse_mode="Markdown",
+    await state.set_state(Form.waiting_description)
+    user = get_user_db(cb.from_user.id)
+    lang = user.language if user else "ru"
+    await cb.message.edit_text(
+        "📝 Напиши описание (или /skip):\nПример: 'для стримера, люблю космос'",
         reply_markup=None
     )
-    await state.set_state(GenerateStates.waiting_for_description)
-    await callback.answer()
+    await cb.answer()
 
 
-@router.message(GenerateStates.waiting_for_description)
-async def process_ai_description(message: Message, state: FSMContext):
-    """Обработка описания и генерация ников"""
-    # ДИАГНОСТИКА
-    current_state = await state.get_state()
-    logger.info(f"🔍 process_ai_description вызван!")
-    logger.info(f"🔍 Текущее состояние: {current_state}")
-    logger.info(f"🔍 Текст сообщения: {message.text}")
-    logger.info(f"🔍 Ожидаемое состояние: {GenerateStates.waiting_for_description}")
-
-    if current_state != GenerateStates.waiting_for_description:
-        logger.warning(f"⚠️ Состояние не совпадает! {current_state} != {GenerateStates.waiting_for_description}")
-        await message.answer(
-            "Пожалуйста, начните заново: /start → AI генерация → выберите стиль",
-            reply_markup=get_main_keyboard(await get_user_language(message.from_user.id))
-        )
-        return
-    lang = await get_user_language(message.from_user.id)
-
-    if message.text == "/skip":
-        description = "случайный уникальный ник / random unique nickname"
-    else:
-        description = message.text
+@router.message(Form.waiting_description)
+async def process_desc(msg: Message, state: FSMContext):
+    user = get_user_db(msg.from_user.id)
+    lang = user.language if user else "ru"
 
     data = await state.get_data()
-    style = data.get("style", "random")
+    style = data.get("style", "cool")
 
-    loading_msg = await message.answer(
-        "🔄 **Генерирую уникальные ники...**\n"
-        "⏳ Подожди 5-10 секунд / Wait 5-10 seconds"
-    )
+    if msg.text == "/skip":
+        desc = "случайный"
+    else:
+        desc = msg.text
+
+    await msg.answer(i18n.get("generating", lang))
 
     try:
-        nicks = await generate_nicks_ai(description, style, count=3)
-        password = generate_secure_password(14)
+        nick = await gen_nick_ai(style)
+        password = gen_password(12)
 
-        user = await get_user(message.from_user.id)
-        if user:
-            for nick in nicks:
-                await save_generated_nick(
-                    user_id=user.id, # type: ignore
-                    nick=nick,
-                    password=password,
-                    style=style,
-                    description=description
-                )
-                logger.info(f"💾 Сохранен ник: {nick} для пользователя {user.id}")
-        else:
-            logger.error(f"❌ Пользователь не найден: {message.from_user.id}")
+        save_nick_db(user.id, nick, password, style)
 
-        response = "🧠 **AI сгенерировал ники / AI generated nicknames:**\n\n"
-        for i, nick in enumerate(nicks, 1):
-            response += f"{i}. `{nick}`\n"
-        response += f"\n🔐 **Пароль / Password:** `{password}`"
+        # Аватарка
+        await msg.answer(i18n.get("avatar_generating", lang))
+        avatar = await gen_avatar(nick)
 
-        await loading_msg.delete()
-
-        # ГЕНЕРАЦИЯ АВАТАРКИ
-        await message.answer(
-            "🎨 **Генерирую аватарку...**\n"
-            "⏳ Это может занять до 30 секунд / This may take up to 30 seconds"
-        )
-
-        # Пробуем через HuggingFace
-        avatar = await generate_avatar(nicks[0], style)
-
-        # Если HuggingFace не работает, пробуем Pollinations
-        if not avatar:
-            logger.info("🔄 Пробуем альтернативный сервис Pollinations")
-            avatar = await generate_avatar_free(nicks[0], style)
+        text = f"🎯 **{nick}**\n🔐 Пароль: `{password}`"
 
         if avatar:
-            await message.answer_photo(
+            await msg.answer_photo(
                 photo=BufferedInputFile(avatar, filename="avatar.png"),
-                caption=response,
-                reply_markup=get_main_keyboard(lang)
+                caption=text,
+                reply_markup=main_kb(lang)
             )
         else:
-            await message.answer(
-                response + "\n\n❌ Аватарку не удалось сгенерировать, но ники готовы!\n"
-                           "❌ Avatar generation failed, but nicknames are ready!",
-                reply_markup=get_main_keyboard(lang)
+            await msg.answer(
+                text + "\n\n❌ Аватарка не сгенерировалась, но ник готов!",
+                reply_markup=main_kb(lang)
             )
 
         await state.clear()
 
-    except Exception as err:
-        logger.error(f"❌ Ошибка AI генерации: {err}")
-        await loading_msg.delete()
-        await message.answer(
-            "❌ Произошла ошибка. Попробуй позже.\n"
-            "❌ An error occurred. Try again later.",
-            reply_markup=get_main_keyboard(lang)
-        )
+    except Exception as e:
+        logger.error(f"Error: {e}")
+        await msg.answer("❌ Ошибка. Попробуйте позже.", reply_markup=main_kb(lang))
         await state.clear()
 
 
-@router.message()
-async def catch_all(message: Message, state: FSMContext):
-    """Перехват всех сообщений для диагностики"""
-    current_state = await state.get_state()
-    logger.info(f"📨 Перехвачено сообщение: '{message.text}'")
-    logger.info(f"🔍 Состояние: {current_state}")
+@router.callback_query(F.data == "gen_pass")
+async def gen_pass(cb: CallbackQuery):
+    user = get_user_db(cb.from_user.id)
+    lang = user.language if user else "ru"
+    password = gen_password(16)
+    await cb.message.edit_text(
+        i18n.get("password_result", lang, password=password),
+        reply_markup=main_kb(lang)
+    )
+    await cb.answer()
 
-    # Если состояние активное, но обработчик не сработал
-    if current_state == GenerateStates.waiting_for_description:
-        logger.warning("⚠️ Состояние active, но обработчик не сработал!")
-        # Перенаправляем вручную
-        await process_ai_description(message, state)
 
-# ==================== ПЛАТЕЖИ ====================
-@router.callback_query(F.data == "buy_generations")
-async def process_buy_generations(callback: CallbackQuery):
-    lang = await get_user_language(callback.from_user.id)
+@router.callback_query(F.data == "history")
+async def history(cb: CallbackQuery):
+    user = get_user_db(cb.from_user.id)
+    lang = user.language if user else "ru"
+    history = get_history_db(user.id, 10)
+    if not history:
+        await cb.message.edit_text(i18n.get("no_history", lang), reply_markup=main_kb(lang))
+        await cb.answer()
+        return
+    text = i18n.get("history_title", lang) + "\n\n"
+    for i, n in enumerate(history, 1):
+        text += f"{i}. `{n.nick}`"
+        if n.password:
+            text += f" | Пароль: `{n.password}`"
+        text += f"\n   🕐 {n.created_at.strftime('%d.%m.%Y %H:%M')}\n"
+    await cb.message.edit_text(text, reply_markup=main_kb(lang))
+    await cb.answer()
+
+
+@router.callback_query(F.data == "buy")
+async def buy(cb: CallbackQuery):
+    user = get_user_db(cb.from_user.id)
+    lang = user.language if user else "ru"
     prices = [LabeledPrice(label="⭐ 3 генерации", amount=1000)]
-    await callback.message.delete()
-    await callback.message.answer_invoice(
-        title=i18n.get("buy_title", lang),
-        description=i18n.get("buy_description", lang),
+    await cb.message.answer_invoice(
+        title="⭐ Пополнение",
+        description="3 дополнительные генерации",
         prices=prices,
         provider_token="",
-        payload="buy_3_generations",
-        currency="XTR",
-        reply_markup=get_payment_keyboard(lang)
+        payload="buy_3",
+        currency="XTR"
     )
-    await callback.answer()
+    await cb.answer()
 
 
 @router.pre_checkout_query()
-async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery):
-    await pre_checkout_query.answer(ok=True)
-    logger.info(f"✅ Pre-checkout: {pre_checkout_query.from_user.id}")
+async def pre_checkout(query: PreCheckoutQuery):
+    await query.answer(ok=True)
 
 
 @router.message(F.successful_payment)
-async def process_successful_payment(message: Message):
-    payment = message.successful_payment
-    user_id = message.from_user.id
-    amount = payment.total_amount // 100
-
-    await add_generations_to_user(user_id, 3)
-
-    with SessionLocal() as db:
-        user = db.query(User).filter(User.telegram_id == user_id).first()
-        if user:
-            db.add(Payment(
-                user_id = int(user.id), # type: ignore
-                charge_id=payment.telegram_payment_charge_id,
-                amount=amount
-            ))
-            db.commit()
-
-    logger.success(f"💰 Оплата {amount} Stars от {user_id}")
-
-    lang = await get_user_language(user_id)
-    await message.answer(
-        i18n.get("payment_success", lang),
-        reply_markup=get_main_keyboard(lang)
-    )
+async def payment_success(msg: Message):
+    add_purchased_db(msg.from_user.id, 3)
+    user = get_user_db(msg.from_user.id)
+    lang = user.language if user else "ru"
+    await msg.answer("✅ Оплата успешна! +3 генерации", reply_markup=main_kb(lang))
 
 
-# ==================== АДМИН-КОМАНДЫ ====================
 @router.message(Command("stats"))
-async def stats_command(message: Message):
-    if message.from_user.id not in ADMIN_IDS:
-        await message.answer("⛔ Доступ запрещен")
+async def stats(msg: Message):
+    if msg.from_user.id not in ADMIN_IDS:
+        await msg.answer("⛔ Доступ запрещен")
         return
-
-    with SessionLocal() as db:
-        total_users = db.query(User).count()
-        total_generations = db.query(GeneratedNick).count()
-        total_payments = db.query(Payment).count()
-        total_stars = db.query(func.sum(Payment.amount)).scalar() or 0
-
-        await message.answer(
-            f"📊 **Статистика CyberNick AI**\n\n"
-            f"👥 Пользователей: {total_users}\n"
-            f"📝 Генераций: {total_generations}\n"
-            f"💳 Платежей: {total_payments}\n"
-            f"⭐ Заработано Stars: {total_stars}\n"
-            f"💰 Заработано ($): ~${total_stars * 0.01:.2f}\n\n"
-            f"🕐 {datetime.now(timezone.utc).strftime('%d.%m.%Y %H:%M')} UTC"
-        )
+    with Session() as db:
+        users = db.query(User).count()
+        nicks = db.query(Nick).count()
+        await msg.answer(f"📊 Статистика:\n👥 Пользователей: {users}\n📝 Ников: {nicks}")
 
 
 # ==================== ЗАПУСК ====================
 async def main():
-    dp.include_router(router)  # ← ЭТО ДОЛЖНО БЫТЬ!
-
-    try:
-        await bot.delete_webhook(drop_pending_updates=True)
-        logger.info("✅ Webhook удален")
-    except Exception as exc:
-        logger.warning(f"⚠️ Не удалось удалить webhook: {exc}")
-
-    logger.info("🚀 CyberNick AI Bot запущен!")
+    dp.include_router(router)
+    await bot.delete_webhook(drop_pending_updates=True)
+    logger.info("🚀 Бот запущен!")
     await dp.start_polling(bot)
 
 
