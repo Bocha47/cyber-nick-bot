@@ -162,7 +162,7 @@ class Nick(Base):
     password = Column(String(255))
     style = Column(String(50))
     gender = Column(String(10))
-    description = Column(Text)  # Добавляем поле для описания
+    description = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -182,7 +182,6 @@ logger.info("✅ База данных создана")
 # ==================== ФУНКЦИИ БАЗЫ ====================
 
 def get_user_db(telegram_id: int) -> Optional[Dict[str, Any]]:
-    """Возвращает словарь с данными пользователя"""
     with Session() as db:
         user = db.query(User).filter(User.telegram_id == telegram_id).first()
         if not user:
@@ -263,7 +262,6 @@ def use_generation_db(telegram_id: int) -> bool:
 
 
 def get_user_language(telegram_id: int) -> str:
-    """Безопасно получает язык пользователя"""
     user_data = get_user_db(telegram_id)
     if user_data:
         return user_data["language"]
@@ -271,7 +269,6 @@ def get_user_language(telegram_id: int) -> str:
 
 
 def get_user_id(telegram_id: int) -> Optional[int]:
-    """Безопасно получает внутренний ID пользователя"""
     user_data = get_user_db(telegram_id)
     if user_data:
         return user_data["id"]
@@ -285,7 +282,6 @@ def gen_password(length: int = 16) -> str:
 
 
 async def gen_nick_ai(style: str = "cool") -> str:
-    """Генерирует ник ТОЛЬКО на латинице"""
     if not OPENAI_API_KEY:
         return f"{random.choice(['Cyber', 'Neon', 'Shadow'])}{random.randint(10, 99)}"
 
@@ -317,48 +313,81 @@ async def gen_nick_ai(style: str = "cool") -> str:
         return f"{random.choice(['Cyber', 'Neon', 'Shadow', 'Phoenix', 'Nova'])}{random.randint(10, 99)}"
 
 
-async def gen_avatar_female(nick: str, description: str = "") -> Optional[bytes]:
-    """Генерирует женскую аватарку с учетом описания"""
+def get_random_style(gender: str = "female", style: str = "cool") -> dict:
+    """Возвращает случайный стиль для аватарки"""
 
-    # Базовый промпт
+    styles = {
+        "female": [
+            {"prompt": "anime style, kawaii, big eyes, colorful hair, vibrant", "seed": random.randint(1, 1000000)},
+            {"prompt": "realistic, detailed, professional photo, high quality", "seed": random.randint(1, 1000000)},
+            {"prompt": "fantasy art, magical, glowing eyes, ethereal, dreamy", "seed": random.randint(1, 1000000)},
+            {"prompt": "cyberpunk, neon, futuristic, tech, glowing", "seed": random.randint(1, 1000000)},
+            {"prompt": "cartoon, cute, colorful, stylized, vector art", "seed": random.randint(1, 1000000)},
+            {"prompt": "watercolor, artistic, soft, pastel, painting", "seed": random.randint(1, 1000000)},
+            {"prompt": "gothic, dark, mysterious, elegant, dark colors", "seed": random.randint(1, 1000000)},
+            {"prompt": "steampunk, victorian, mechanical, gears, vintage", "seed": random.randint(1, 1000000)},
+            {"prompt": "pixel art, retro, 8-bit, gaming, colorful", "seed": random.randint(1, 1000000)},
+            {"prompt": "minimalist, modern, simple, elegant, clean", "seed": random.randint(1, 1000000)},
+        ],
+        "male": [
+            {"prompt": "anime style, cool, spiky hair, vibrant, shonen", "seed": random.randint(1, 1000000)},
+            {"prompt": "realistic, detailed, professional photo, high quality", "seed": random.randint(1, 1000000)},
+            {"prompt": "fantasy, warrior, strong, magical, epic", "seed": random.randint(1, 1000000)},
+            {"prompt": "cyberpunk, neon, futuristic, tech, glowing", "seed": random.randint(1, 1000000)},
+            {"prompt": "cartoon, cool, stylized, vector art", "seed": random.randint(1, 1000000)},
+            {"prompt": "watercolor, artistic, soft, painting", "seed": random.randint(1, 1000000)},
+            {"prompt": "gothic, dark, mysterious, elegant", "seed": random.randint(1, 1000000)},
+            {"prompt": "steampunk, victorian, mechanical, gears", "seed": random.randint(1, 1000000)},
+            {"prompt": "pixel art, retro, 8-bit, gaming, colorful", "seed": random.randint(1, 1000000)},
+            {"prompt": "minimalist, modern, simple, elegant, clean", "seed": random.randint(1, 1000000)},
+        ]
+    }
+
+    style_list = styles.get(gender, styles["female"])
+    selected = random.choice(style_list)
+
+    if style == "anime":
+        selected["prompt"] += ", anime, japanese style"
+    elif style == "cool" or style == "cyber":
+        selected["prompt"] += ", cyberpunk, neon, futuristic"
+    elif style == "fantasy":
+        selected["prompt"] += ", fantasy, magic, mythical"
+
+    return selected
+
+
+async def gen_avatar_female(nick: str, description: str = "", style: str = "cool") -> Optional[bytes]:
+    """Генерирует женскую аватарку с учетом описания и случайного стиля"""
+
+    style_data = get_random_style("female", style)
+    style_prompt = style_data["prompt"]
+    seed = style_data["seed"]
+
     base_prompt = f"Beautiful female avatar, girl, woman, gamer, named {nick}"
 
-    # Добавляем описание, если оно есть
-    if description and description != "случайный":
+    if description and description != "случайный" and len(description) > 3:
         keywords = description.lower()
         if "стример" in keywords or "streamer" in keywords:
-            base_prompt += ", streamer, gaming setup, microphone, headset"
+            base_prompt += ", streamer, gaming setup, microphone"
         if "космос" in keywords or "space" in keywords:
-            base_prompt += ", space background, stars, galaxy, cosmic"
+            base_prompt += ", space background, stars"
         if "милый" in keywords or "cute" in keywords:
-            base_prompt += ", cute, kawaii, pastel colors"
+            base_prompt += ", cute, kawaii"
         if "агрессивный" in keywords or "aggressive" in keywords:
-            base_prompt += ", aggressive, dark, red accents, fierce"
-        if "киберпанк" in keywords or "cyberpunk" in keywords:
-            base_prompt += ", cyberpunk, neon lights, futuristic"
-        if "аниме" in keywords or "anime" in keywords:
-            base_prompt += ", anime style, big eyes, colorful hair"
-        if "фэнтези" in keywords or "fantasy" in keywords:
-            base_prompt += ", fantasy, elf ears, magical, glowing"
-        if "игры" in keywords or "games" in keywords or "gaming" in keywords:
-            base_prompt += ", gaming, controller, gamer girl"
-        if "природа" in keywords or "nature" in keywords:
-            base_prompt += ", nature background, forest, flowers"
-        if "темный" in keywords or "dark" in keywords:
-            base_prompt += ", dark theme, gothic, mysterious"
-        # Добавляем само описание
-        base_prompt += f", {description}"
+            base_prompt += ", aggressive, fierce"
+        if "игры" in keywords or "games" in keywords:
+            base_prompt += ", gaming, controller"
 
-    # Добавляем общие параметры качества
-    base_prompt += ", digital art, vibrant, high quality, detailed, portrait, 4k, masterpiece, trending on artstation"
+    base_prompt += f", {style_prompt}"
+    base_prompt += ", high quality, detailed, portrait, 4k, trending on artstation"
 
-    url = f"https://image.pollinations.ai/prompt/{base_prompt}?width=512&height=512&nologo=true"
+    url = f"https://image.pollinations.ai/prompt/{base_prompt}?width=512&height=512&nologo=true&seed={seed}"
 
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=30) as resp:
                 if resp.status == 200:
-                    logger.info(f"✅ Женская аватарка сгенерирована для {nick}")
+                    logger.info(f"✅ Женская аватарка (стиль: {style_prompt[:50]})")
                     return await resp.read()
                 else:
                     logger.warning(f"❌ Ошибка Pollinations: {resp.status}")
@@ -367,47 +396,41 @@ async def gen_avatar_female(nick: str, description: str = "") -> Optional[bytes]
     return None
 
 
-async def gen_avatar_male(nick: str, description: str = "") -> Optional[bytes]:
-    """Генерирует мужскую аватарку с учетом описания"""
+async def gen_avatar_male(nick: str, description: str = "", style: str = "cool") -> Optional[bytes]:
+    """Генерирует мужскую аватарку с учетом описания и случайного стиля"""
 
-    # Базовый промпт
+    style_data = get_random_style("male", style)
+    style_prompt = style_data["prompt"]
+    seed = style_data["seed"]
+
     base_prompt = f"Cool male avatar, boy, man, gamer, named {nick}"
 
-    # Добавляем описание, если оно есть
-    if description and description != "случайный":
+    if description and description != "случайный" and len(description) > 3:
         keywords = description.lower()
         if "стример" in keywords or "streamer" in keywords:
-            base_prompt += ", streamer, gaming, headset, setup"
+            base_prompt += ", streamer, gaming setup, headset"
         if "космос" in keywords or "space" in keywords:
-            base_prompt += ", space background, stars, futuristic"
+            base_prompt += ", space background, stars"
         if "милый" in keywords or "cute" in keywords:
-            base_prompt += ", cute, soft features, gentle"
+            base_prompt += ", cute, soft"
         if "агрессивный" in keywords or "aggressive" in keywords:
-            base_prompt += ", aggressive, dark, red, warrior"
-        if "киберпанк" in keywords or "cyberpunk" in keywords:
-            base_prompt += ", cyberpunk, neon, tech"
-        if "аниме" in keywords or "anime" in keywords:
-            base_prompt += ", anime style, spiky hair"
-        if "фэнтези" in keywords or "fantasy" in keywords:
-            base_prompt += ", fantasy, knight, magic, sword"
-        if "игры" in keywords or "games" in keywords or "gaming" in keywords:
-            base_prompt += ", gaming, controller, gamer"
-        if "природа" in keywords or "nature" in keywords:
-            base_prompt += ", nature, forest, mountain"
-        if "темный" in keywords or "dark" in keywords:
-            base_prompt += ", dark theme, gothic, mysterious"
-        base_prompt += f", {description}"
+            base_prompt += ", aggressive, warrior"
+        if "игры" in keywords or "games" in keywords:
+            base_prompt += ", gaming, controller"
 
-    base_prompt += ", digital art, vibrant, high quality, detailed, portrait, 4k, masterpiece, trending on artstation"
+    base_prompt += f", {style_prompt}"
+    base_prompt += ", high quality, detailed, portrait, 4k, trending on artstation"
 
-    url = f"https://image.pollinations.ai/prompt/{base_prompt}?width=512&height=512&nologo=true"
+    url = f"https://image.pollinations.ai/prompt/{base_prompt}?width=512&height=512&nologo=true&seed={seed}"
 
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=30) as resp:
                 if resp.status == 200:
-                    logger.info(f"✅ Мужская аватарка сгенерирована для {nick}")
+                    logger.info(f"✅ Мужская аватарка (стиль: {style_prompt[:50]})")
                     return await resp.read()
+                else:
+                    logger.warning(f"❌ Ошибка Pollinations: {resp.status}")
     except Exception as e:
         logger.error(f"Avatar error: {e}")
     return None
@@ -415,7 +438,6 @@ async def gen_avatar_male(nick: str, description: str = "") -> Optional[bytes]:
 
 # ==================== УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ====================
 async def edit_or_answer(callback: CallbackQuery, text: str, reply_markup=None):
-    """Безопасно редактирует или отправляет новое сообщение"""
     try:
         if callback.message and callback.message.text is not None:
             await callback.message.edit_text(text, reply_markup=reply_markup)
@@ -572,7 +594,6 @@ async def process_desc(msg: Message, state: FSMContext):
     style = data.get("style", "cool")
     gender = data.get("gender", "female")
 
-    # Сохраняем описание
     if msg.text == "/skip":
         description = ""
     else:
@@ -581,11 +602,9 @@ async def process_desc(msg: Message, state: FSMContext):
     loading = await msg.answer(i18n.get("generating", lang))
 
     try:
-        # Генерируем ник
         nick = await gen_nick_ai(style)
         password = gen_password(12)
 
-        # Сохраняем с описанием
         save_nick_db(user_id, nick, password, style, gender, description)
 
         await loading.delete()
@@ -594,13 +613,11 @@ async def process_desc(msg: Message, state: FSMContext):
         await msg.answer(
             f"🎨 **Генерирую {gender_text.lower()} аватарку...**\n⏳ до 30 сек\n📝 Описание: {description if description else 'без описания'}")
 
-        # Генерируем аватарку С УЧЕТОМ ОПИСАНИЯ
         if gender == "female":
-            avatar = await gen_avatar_female(nick, description)
+            avatar = await gen_avatar_female(nick, description, style)
         else:
-            avatar = await gen_avatar_male(nick, description)
+            avatar = await gen_avatar_male(nick, description, style)
 
-        # Формируем текст результата
         text = f"🎯 **{nick}**\n🔐 Пароль: `{password}`\n{gender_text} аватарка"
         if description:
             text += f"\n📝 Описание: {description[:50]}..."
