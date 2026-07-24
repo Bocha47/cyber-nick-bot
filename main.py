@@ -8,7 +8,7 @@ import json
 import re
 import aiohttp
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, Dict, Any
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher, Router, F
@@ -161,7 +161,7 @@ class Nick(Base):
     nick = Column(String(255), nullable=False)
     password = Column(String(255))
     style = Column(String(50))
-    gender = Column(String(10))  # Добавляем поле для пола
+    gender = Column(String(10))
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -178,18 +178,30 @@ Base.metadata.create_all(engine)
 logger.info("✅ База данных создана")
 
 
-# ==================== ФУНКЦИИ БАЗЫ ====================
-def get_user_db(telegram_id: int):
+# ==================== ФУНКЦИИ БАЗЫ (ИСПРАВЛЕННЫЕ) ====================
+
+def get_user_db(telegram_id: int) -> Optional[Dict[str, Any]]:
+    """Возвращает словарь с данными пользователя"""
     with Session() as db:
-        return db.query(User).filter(User.telegram_id == telegram_id).first()
+        user = db.query(User).filter(User.telegram_id == telegram_id).first()
+        if not user:
+            return None
+        return {
+            "id": user.id,
+            "telegram_id": user.telegram_id,
+            "username": user.username,
+            "first_name": user.first_name,
+            "language": user.language,
+            "purchased": user.purchased
+        }
 
 
-def create_user_db(telegram_id: int, username: str = None, first_name: str = None):
+def create_user_db(telegram_id: int, username: str = None, first_name: str = None) -> int:
     with Session() as db:
         user = User(telegram_id=telegram_id, username=username, first_name=first_name)
         db.add(user)
         db.commit()
-        return user
+        return user.id
 
 
 def save_nick_db(user_id: int, nick: str, password: str = None, style: str = None, gender: str = None):
@@ -241,6 +253,22 @@ def use_generation_db(telegram_id: int) -> bool:
         return count < 3
 
 
+def get_user_language(telegram_id: int) -> str:
+    """Безопасно получает язык пользователя"""
+    user_data = get_user_db(telegram_id)
+    if user_data:
+        return user_data["language"]
+    return "ru"
+
+
+def get_user_id(telegram_id: int) -> Optional[int]:
+    """Безопасно получает внутренний ID пользователя"""
+    user_data = get_user_db(telegram_id)
+    if user_data:
+        return user_data["id"]
+    return None
+
+
 # ==================== ГЕНЕРАТОРЫ ====================
 def gen_password(length: int = 16) -> str:
     chars = string.ascii_letters + string.digits + "!@#$%&*"
@@ -271,7 +299,6 @@ async def gen_nick_ai(style: str = "cool") -> str:
             max_tokens=30
         )
         nick = resp.choices[0].message.content.strip()
-        # Очищаем от запрещенных символов (оставляем только латиницу, цифры, _ - .)
         nick = re.sub(r'[^a-zA-Z0-9_\-.]', '', nick)
         if len(nick) > 30 or len(nick) < 3:
             return f"{random.choice(['Cyber', 'Neon', 'Shadow', 'Phoenix', 'Nova'])}{random.randint(10, 99)}"
@@ -309,7 +336,7 @@ async def gen_avatar_male(nick: str) -> Optional[bytes]:
     return None
 
 
-# ==================== УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ДЛЯ РЕДАКТИРОВАНИЯ ====================
+# ==================== УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ====================
 async def edit_or_answer(callback: CallbackQuery, text: str, reply_markup=None):
     """Безопасно редактирует или отправляет новое сообщение"""
     try:
@@ -380,10 +407,13 @@ router = Router()
 # ==================== ОБРАБОТЧИКИ ====================
 @router.message(Command("start"))
 async def start(msg: Message):
-    user = get_user_db(msg.from_user.id)
-    if not user:
-        user = create_user_db(msg.from_user.id, msg.from_user.username, msg.from_user.first_name)
-    lang = user.language if user else "ru"
+    user_data = get_user_db(msg.from_user.id)
+    if not user_data:
+        create_user_db(msg.from_user.id, msg.from_user.username, msg.from_user.first_name)
+        lang = "ru"
+    else:
+        lang = user_data["language"]
+
     await msg.answer(
         i18n.get("welcome", lang, name=msg.from_user.first_name),
         reply_markup=main_kb(lang)
@@ -393,8 +423,7 @@ async def start(msg: Message):
 @router.callback_query(F.data == "back")
 async def back(cb: CallbackQuery, state: FSMContext):
     await state.clear()
-    user = get_user_db(cb.from_user.id)
-    lang = user.language if user else "ru"
+    lang = get_user_language(cb.from_user.id)
     await edit_or_answer(cb, i18n.get("main_menu", lang), main_kb(lang))
     await cb.answer()
 
@@ -420,8 +449,7 @@ async def set_lang(cb: CallbackQuery):
 
 @router.callback_query(F.data == "gen_ai")
 async def gen_ai_start(cb: CallbackQuery, state: FSMContext):
-    user = get_user_db(cb.from_user.id)
-    lang = user.language if user else "ru"
+    lang = get_user_language(cb.from_user.id)
     if not use_generation_db(cb.from_user.id):
         await cb.answer(i18n.get("limit_exceeded", lang), show_alert=True)
         return
@@ -432,11 +460,10 @@ async def gen_ai_start(cb: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("gender_"))
 async def choose_gender(cb: CallbackQuery, state: FSMContext):
-    gender = cb.data.split("_")[1]  # female или male
+    gender = cb.data.split("_")[1]
     await state.update_data(gender=gender)
     await state.set_state(Form.waiting_style)
-    user = get_user_db(cb.from_user.id)
-    lang = user.language if user else "ru"
+    lang = get_user_language(cb.from_user.id)
     await edit_or_answer(cb, i18n.get("choose_style", lang), style_kb(lang))
     await cb.answer()
 
@@ -446,8 +473,7 @@ async def choose_style(cb: CallbackQuery, state: FSMContext):
     style = cb.data.split("_")[1]
     await state.update_data(style=style)
     await state.set_state(Form.waiting_description)
-    user = get_user_db(cb.from_user.id)
-    lang = user.language if user else "ru"
+    lang = get_user_language(cb.from_user.id)
     await edit_or_answer(
         cb,
         "📝 Напиши описание (или /skip):\nПример: 'для стримера, люблю космос'",
@@ -458,8 +484,12 @@ async def choose_style(cb: CallbackQuery, state: FSMContext):
 
 @router.message(Form.waiting_description)
 async def process_desc(msg: Message, state: FSMContext):
-    user = get_user_db(msg.from_user.id)
-    lang = user.language if user else "ru"
+    user_id = get_user_id(msg.from_user.id)
+    if not user_id:
+        await msg.answer("❌ Ошибка: пользователь не найден")
+        return
+
+    lang = get_user_language(msg.from_user.id)
 
     data = await state.get_data()
     style = data.get("style", "cool")
@@ -473,19 +503,16 @@ async def process_desc(msg: Message, state: FSMContext):
     loading = await msg.answer(i18n.get("generating", lang))
 
     try:
-        # Генерируем ник (только латиница)
         nick = await gen_nick_ai(style)
         password = gen_password(12)
 
-        # Сохраняем с указанием пола
-        save_nick_db(user.id, nick, password, style, gender)
+        save_nick_db(user_id, nick, password, style, gender)
 
         await loading.delete()
 
         gender_text = "👩 Женская" if gender == "female" else "👨 Мужская"
         await msg.answer(f"🎨 **Генерирую {gender_text.lower()} аватарку...**\n⏳ до 30 сек")
 
-        # Генерируем аватарку в зависимости от пола
         if gender == "female":
             avatar = await gen_avatar_female(nick)
         else:
@@ -516,8 +543,7 @@ async def process_desc(msg: Message, state: FSMContext):
 
 @router.callback_query(F.data == "gen_pass")
 async def gen_pass(cb: CallbackQuery):
-    user = get_user_db(cb.from_user.id)
-    lang = user.language if user else "ru"
+    lang = get_user_language(cb.from_user.id)
     password = gen_password(16)
     await edit_or_answer(
         cb,
@@ -529,13 +555,20 @@ async def gen_pass(cb: CallbackQuery):
 
 @router.callback_query(F.data == "history")
 async def history(cb: CallbackQuery):
-    user = get_user_db(cb.from_user.id)
-    lang = user.language if user else "ru"
-    history = get_history_db(user.id, 10)
+    user_id = get_user_id(cb.from_user.id)
+    lang = get_user_language(cb.from_user.id)
+
+    if not user_id:
+        await edit_or_answer(cb, i18n.get("no_history", lang), main_kb(lang))
+        await cb.answer()
+        return
+
+    history = get_history_db(user_id, 10)
     if not history:
         await edit_or_answer(cb, i18n.get("no_history", lang), main_kb(lang))
         await cb.answer()
         return
+
     text = i18n.get("history_title", lang) + "\n\n"
     for i, n in enumerate(history, 1):
         text += f"{i}. `{n.nick}`"
@@ -551,8 +584,7 @@ async def history(cb: CallbackQuery):
 
 @router.callback_query(F.data == "buy")
 async def buy(cb: CallbackQuery):
-    user = get_user_db(cb.from_user.id)
-    lang = user.language if user else "ru"
+    lang = get_user_language(cb.from_user.id)
     prices = [LabeledPrice(label="⭐ 3 генерации", amount=1000)]
     await cb.message.answer_invoice(
         title="⭐ Пополнение",
@@ -573,8 +605,7 @@ async def pre_checkout(query: PreCheckoutQuery):
 @router.message(F.successful_payment)
 async def payment_success(msg: Message):
     add_purchased_db(msg.from_user.id, 3)
-    user = get_user_db(msg.from_user.id)
-    lang = user.language if user else "ru"
+    lang = get_user_language(msg.from_user.id)
     await msg.answer("✅ Оплата успешна! +3 генерации", reply_markup=main_kb(lang))
 
 
