@@ -70,12 +70,46 @@ class I18n:
                 pass
 
     def _create_default(self):
-        ru = {"welcome": "Привет!", "main_menu": "Главное меню"}
-        en = {"welcome": "Hello!", "main_menu": "Main Menu"}
+        ru = {
+            "welcome": "👋 Привет, {name}!\n\n🤖 **CyberNick AI** — генератор ников и аватарок!\n\n⭐ **3 бесплатные генерации в день**\n💰 10 Stars = +3 генерации",
+            "main_menu": "🏠 Главное меню",
+            "back": "🔙 Назад",
+            "settings": "⚙️ Настройки",
+            "buttons": {
+                "ai_generation": "🤖 AI генерация",
+                "password": "🔐 Пароль",
+                "history": "📜 История",
+                "buy": "⭐ Купить генерации"
+            },
+            "limit_exceeded": "❌ Лимит исчерпан! Купите генерации за Stars",
+            "no_history": "📭 Нет сохраненных генераций",
+            "generating": "🔄 Генерирую... ⏳ 5-10 сек",
+            "avatar_generating": "🎨 Генерирую аватарку... ⏳ до 30 сек",
+            "password_result": "🔐 Пароль: `{password}`",
+            "history_title": "📜 История (последние 10):"
+        }
+        en = {
+            "welcome": "👋 Hello, {name}!\n\n🤖 **CyberNick AI** — nickname & avatar generator!\n\n⭐ **3 free generations per day**\n💰 10 Stars = +3 generations",
+            "main_menu": "🏠 Main Menu",
+            "back": "🔙 Back",
+            "settings": "⚙️ Settings",
+            "buttons": {
+                "ai_generation": "🤖 AI Generation",
+                "password": "🔐 Password",
+                "history": "📜 History",
+                "buy": "⭐ Buy Generations"
+            },
+            "limit_exceeded": "❌ Limit exceeded! Buy generations for Stars",
+            "no_history": "📭 No saved generations",
+            "generating": "🔄 Generating... ⏳ 5-10 sec",
+            "avatar_generating": "🎨 Generating avatar... ⏳ up to 30 sec",
+            "password_result": "🔐 Password: `{password}`",
+            "history_title": "📜 History (last 10):"
+        }
         with open("locales/ru.json", 'w', encoding='utf-8') as f:
-            json.dump(ru, f, ensure_ascii=False)
+            json.dump(ru, f, ensure_ascii=False, indent=2)
         with open("locales/en.json", 'w', encoding='utf-8') as f:
-            json.dump(en, f, ensure_ascii=False)
+            json.dump(en, f, ensure_ascii=False, indent=2)
         self.data = {"ru": ru, "en": en}
 
     def get(self, key: str, lang: str = None, **kwargs) -> str:
@@ -251,14 +285,29 @@ async def gen_avatar(nick: str) -> Optional[bytes]:
     return None
 
 
+# ==================== УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ДЛЯ РЕДАКТИРОВАНИЯ ====================
+async def edit_or_answer(callback: CallbackQuery, text: str, reply_markup=None):
+    """Безопасно редактирует или отправляет новое сообщение"""
+    try:
+        if callback.message and callback.message.text is not None:
+            await callback.message.edit_text(text, reply_markup=reply_markup)
+        else:
+            await callback.message.answer(text, reply_markup=reply_markup)
+            if callback.message:
+                await callback.message.delete()
+    except Exception as e:
+        logger.warning(f"Edit fallback: {e}")
+        await callback.message.answer(text, reply_markup=reply_markup)
+
+
 # ==================== КЛАВИАТУРЫ ====================
 def main_kb(lang: str = "ru") -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="🤖 AI генерация", callback_data="gen_ai")
-    b.button(text="🔐 Пароль", callback_data="gen_pass")
-    b.button(text="📜 История", callback_data="history")
-    b.button(text="⭐ Купить", callback_data="buy")
-    b.button(text="⚙️ Настройки", callback_data="settings")
+    b.button(text=i18n.get("buttons.ai_generation", lang), callback_data="gen_ai")
+    b.button(text=i18n.get("buttons.password", lang), callback_data="gen_pass")
+    b.button(text=i18n.get("buttons.history", lang), callback_data="history")
+    b.button(text=i18n.get("buttons.buy", lang), callback_data="buy")
+    b.button(text=i18n.get("settings", lang), callback_data="settings")
     b.adjust(2, 2, 1)
     return b.as_markup()
 
@@ -268,7 +317,7 @@ def style_kb(lang: str = "ru") -> InlineKeyboardMarkup:
     b.button(text="💻 Киберпанк", callback_data="style_cool")
     b.button(text="🌸 Аниме", callback_data="style_anime")
     b.button(text="🧙 Фэнтези", callback_data="style_fantasy")
-    b.button(text="🔙 Назад", callback_data="back")
+    b.button(text=i18n.get("back", lang), callback_data="back")
     b.adjust(2, 1)
     return b.as_markup()
 
@@ -310,17 +359,15 @@ async def start(msg: Message):
 @router.callback_query(F.data == "back")
 async def back(cb: CallbackQuery, state: FSMContext):
     await state.clear()
-    lang = "ru"
     user = get_user_db(cb.from_user.id)
-    if user:
-        lang = user.language
-    await cb.message.edit_text(i18n.get("main_menu", lang), reply_markup=main_kb(lang))
+    lang = user.language if user else "ru"
+    await edit_or_answer(cb, i18n.get("main_menu", lang), main_kb(lang))
     await cb.answer()
 
 
 @router.callback_query(F.data == "settings")
 async def settings(cb: CallbackQuery):
-    await cb.message.edit_text("🌐 Выберите язык:", reply_markup=lang_kb())
+    await edit_or_answer(cb, "🌐 Выберите язык:", lang_kb())
     await cb.answer()
 
 
@@ -332,10 +379,8 @@ async def set_lang(cb: CallbackQuery):
         if user:
             user.language = lang
             db.commit()
-    await cb.message.edit_text(
-        "✅ Язык изменен!" if lang == "ru" else "✅ Language changed!",
-        reply_markup=main_kb(lang)
-    )
+    text = "✅ Язык изменен!" if lang == "ru" else "✅ Language changed!"
+    await edit_or_answer(cb, text, main_kb(lang))
     await cb.answer()
 
 
@@ -347,7 +392,7 @@ async def gen_ai_start(cb: CallbackQuery, state: FSMContext):
         await cb.answer(i18n.get("limit_exceeded", lang), show_alert=True)
         return
     await state.set_state(Form.waiting_style)
-    await cb.message.edit_text("🎨 Выбери стиль:", reply_markup=style_kb(lang))
+    await edit_or_answer(cb, "🎨 Выбери стиль:", style_kb(lang))
     await cb.answer()
 
 
@@ -358,9 +403,10 @@ async def choose_style(cb: CallbackQuery, state: FSMContext):
     await state.set_state(Form.waiting_description)
     user = get_user_db(cb.from_user.id)
     lang = user.language if user else "ru"
-    await cb.message.edit_text(
+    await edit_or_answer(
+        cb,
         "📝 Напиши описание (или /skip):\nПример: 'для стримера, люблю космос'",
-        reply_markup=None
+        None
     )
     await cb.answer()
 
@@ -378,7 +424,7 @@ async def process_desc(msg: Message, state: FSMContext):
     else:
         desc = msg.text
 
-    await msg.answer(i18n.get("generating", lang))
+    loading = await msg.answer(i18n.get("generating", lang))
 
     try:
         nick = await gen_nick_ai(style)
@@ -386,8 +432,9 @@ async def process_desc(msg: Message, state: FSMContext):
 
         save_nick_db(user.id, nick, password, style)
 
-        # Аватарка
+        await loading.delete()
         await msg.answer(i18n.get("avatar_generating", lang))
+
         avatar = await gen_avatar(nick)
 
         text = f"🎯 **{nick}**\n🔐 Пароль: `{password}`"
@@ -407,7 +454,8 @@ async def process_desc(msg: Message, state: FSMContext):
         await state.clear()
 
     except Exception as e:
-        logger.error(f"Error: {e}")
+        logger.error(f"Generation error: {e}")
+        await loading.delete()
         await msg.answer("❌ Ошибка. Попробуйте позже.", reply_markup=main_kb(lang))
         await state.clear()
 
@@ -417,9 +465,10 @@ async def gen_pass(cb: CallbackQuery):
     user = get_user_db(cb.from_user.id)
     lang = user.language if user else "ru"
     password = gen_password(16)
-    await cb.message.edit_text(
+    await edit_or_answer(
+        cb,
         i18n.get("password_result", lang, password=password),
-        reply_markup=main_kb(lang)
+        main_kb(lang)
     )
     await cb.answer()
 
@@ -430,7 +479,7 @@ async def history(cb: CallbackQuery):
     lang = user.language if user else "ru"
     history = get_history_db(user.id, 10)
     if not history:
-        await cb.message.edit_text(i18n.get("no_history", lang), reply_markup=main_kb(lang))
+        await edit_or_answer(cb, i18n.get("no_history", lang), main_kb(lang))
         await cb.answer()
         return
     text = i18n.get("history_title", lang) + "\n\n"
@@ -439,7 +488,7 @@ async def history(cb: CallbackQuery):
         if n.password:
             text += f" | Пароль: `{n.password}`"
         text += f"\n   🕐 {n.created_at.strftime('%d.%m.%Y %H:%M')}\n"
-    await cb.message.edit_text(text, reply_markup=main_kb(lang))
+    await edit_or_answer(cb, text, main_kb(lang))
     await cb.answer()
 
 
@@ -487,7 +536,7 @@ async def stats(msg: Message):
 async def main():
     dp.include_router(router)
     await bot.delete_webhook(drop_pending_updates=True)
-    logger.info("🚀 Бот запущен!")
+    logger.info("🚀 CyberNick AI Bot запущен!")
     await dp.start_polling(bot)
 
 
