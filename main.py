@@ -288,8 +288,16 @@ async def gen_nick_ai(style: str = "cool") -> str:
     styles = {
         "cool": "cool, cyberpunk, english, latin letters only, no cyrillic",
         "anime": "anime, japanese style, english, latin letters only, no cyrillic",
-        "fantasy": "fantasy, magic, english, latin letters only, no cyrillic"
+        "fantasy": "fantasy, magic, english, latin letters only, no cyrillic",
+        "realistic": "cool, modern, english, latin letters only, no cyrillic",
+        "watercolor": "artistic, creative, english, latin letters only, no cyrillic",
+        "gothic": "dark, mysterious, english, latin letters only, no cyrillic",
+        "steampunk": "steampunk, mechanical, english, latin letters only, no cyrillic",
+        "pixel": "retro, gaming, english, latin letters only, no cyrillic",
+        "minimalist": "minimal, modern, english, latin letters only, no cyrillic",
+        "random": "unique, creative, english, latin letters only, no cyrillic"
     }
+
     client = AsyncOpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL, timeout=30)
     try:
         resp = await client.chat.completions.create(
@@ -316,48 +324,39 @@ async def gen_nick_ai(style: str = "cool") -> str:
 def get_random_style(gender: str = "female", style: str = "cool") -> dict:
     """Возвращает случайный стиль для аватарки"""
 
-    styles = {
-        "female": [
-            {"prompt": "anime style, kawaii, big eyes, colorful hair, vibrant", "seed": random.randint(1, 1000000)},
-            {"prompt": "realistic, detailed, professional photo, high quality", "seed": random.randint(1, 1000000)},
-            {"prompt": "fantasy art, magical, glowing eyes, ethereal, dreamy", "seed": random.randint(1, 1000000)},
-            {"prompt": "cyberpunk, neon, futuristic, tech, glowing", "seed": random.randint(1, 1000000)},
-            {"prompt": "cartoon, cute, colorful, stylized, vector art", "seed": random.randint(1, 1000000)},
-            {"prompt": "watercolor, artistic, soft, pastel, painting", "seed": random.randint(1, 1000000)},
-            {"prompt": "gothic, dark, mysterious, elegant, dark colors", "seed": random.randint(1, 1000000)},
-            {"prompt": "steampunk, victorian, mechanical, gears, vintage", "seed": random.randint(1, 1000000)},
-            {"prompt": "pixel art, retro, 8-bit, gaming, colorful", "seed": random.randint(1, 1000000)},
-            {"prompt": "minimalist, modern, simple, elegant, clean", "seed": random.randint(1, 1000000)},
-        ],
-        "male": [
-            {"prompt": "anime style, cool, spiky hair, vibrant, shonen", "seed": random.randint(1, 1000000)},
-            {"prompt": "realistic, detailed, professional photo, high quality", "seed": random.randint(1, 1000000)},
-            {"prompt": "fantasy, warrior, strong, magical, epic", "seed": random.randint(1, 1000000)},
-            {"prompt": "cyberpunk, neon, futuristic, tech, glowing", "seed": random.randint(1, 1000000)},
-            {"prompt": "cartoon, cool, stylized, vector art", "seed": random.randint(1, 1000000)},
-            {"prompt": "watercolor, artistic, soft, painting", "seed": random.randint(1, 1000000)},
-            {"prompt": "gothic, dark, mysterious, elegant", "seed": random.randint(1, 1000000)},
-            {"prompt": "steampunk, victorian, mechanical, gears", "seed": random.randint(1, 1000000)},
-            {"prompt": "pixel art, retro, 8-bit, gaming, colorful", "seed": random.randint(1, 1000000)},
-            {"prompt": "minimalist, modern, simple, elegant, clean", "seed": random.randint(1, 1000000)},
-        ]
+    style_map = {
+        "anime": "anime style, kawaii, big eyes, colorful hair, vibrant",
+        "realistic": "realistic, detailed, professional photo, high quality",
+        "fantasy": "fantasy art, magical, glowing eyes, ethereal, dreamy",
+        "cyber": "cyberpunk, neon, futuristic, tech, glowing",
+        "cartoon": "cartoon, cute, colorful, stylized, vector art",
+        "watercolor": "watercolor, artistic, soft, pastel, painting",
+        "gothic": "gothic, dark, mysterious, elegant, dark colors",
+        "steampunk": "steampunk, victorian, mechanical, gears, vintage",
+        "pixel": "pixel art, retro, 8-bit, gaming, colorful",
+        "minimalist": "minimalist, modern, simple, elegant, clean"
     }
 
-    style_list = styles.get(gender, styles["female"])
-    selected = random.choice(style_list)
+    # Если выбран случайный стиль
+    if style == "random":
+        style_keys = list(style_map.keys())
+        style = random.choice(style_keys)
 
-    if style == "anime":
-        selected["prompt"] += ", anime, japanese style"
-    elif style == "cool" or style == "cyber":
-        selected["prompt"] += ", cyberpunk, neon, futuristic"
-    elif style == "fantasy":
-        selected["prompt"] += ", fantasy, magic, mythical"
+    # Получаем промпт для стиля
+    style_prompt = style_map.get(style, style_map["cyber"])
 
-    return selected
+    # Добавляем случайный seed для вариативности
+    seed = random.randint(1, 1000000)
+
+    return {
+        "prompt": style_prompt,
+        "seed": seed,
+        "style_name": style
+    }
 
 
 async def gen_avatar_female(nick: str, description: str = "", style: str = "cool") -> Optional[bytes]:
-    """Генерирует женскую аватарку с учетом описания и случайного стиля"""
+    """Генерирует женскую аватарку с учетом описания и выбранного стиля"""
 
     style_data = get_random_style("female", style)
     style_prompt = style_data["prompt"]
@@ -387,7 +386,7 @@ async def gen_avatar_female(nick: str, description: str = "", style: str = "cool
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=30) as resp:
                 if resp.status == 200:
-                    logger.info(f"✅ Женская аватарка (стиль: {style_prompt[:50]})")
+                    logger.info(f"✅ Женская аватарка (стиль: {style_data['style_name']})")
                     return await resp.read()
                 else:
                     logger.warning(f"❌ Ошибка Pollinations: {resp.status}")
@@ -397,7 +396,7 @@ async def gen_avatar_female(nick: str, description: str = "", style: str = "cool
 
 
 async def gen_avatar_male(nick: str, description: str = "", style: str = "cool") -> Optional[bytes]:
-    """Генерирует мужскую аватарку с учетом описания и случайного стиля"""
+    """Генерирует мужскую аватарку с учетом описания и выбранного стиля"""
 
     style_data = get_random_style("male", style)
     style_prompt = style_data["prompt"]
@@ -427,7 +426,7 @@ async def gen_avatar_male(nick: str, description: str = "", style: str = "cool")
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=30) as resp:
                 if resp.status == 200:
-                    logger.info(f"✅ Мужская аватарка (стиль: {style_prompt[:50]})")
+                    logger.info(f"✅ Мужская аватарка (стиль: {style_data['style_name']})")
                     return await resp.read()
                 else:
                     logger.warning(f"❌ Ошибка Pollinations: {resp.status}")
@@ -464,11 +463,18 @@ def main_kb(lang: str = "ru") -> InlineKeyboardMarkup:
 
 def style_kb(lang: str = "ru") -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="💻 Киберпанк", callback_data="style_cool")
+    b.button(text="💻 Киберпанк", callback_data="style_cyber")
     b.button(text="🌸 Аниме", callback_data="style_anime")
     b.button(text="🧙 Фэнтези", callback_data="style_fantasy")
-    b.button(text=i18n.get("back", lang), callback_data="back")
-    b.adjust(2, 1)
+    b.button(text="🎨 Реализм", callback_data="style_realistic")
+    b.button(text="🖌️ Акварель", callback_data="style_watercolor")
+    b.button(text="🌙 Готика", callback_data="style_gothic")
+    b.button(text="⚙️ Стимпанк", callback_data="style_steampunk")
+    b.button(text="🖼️ Пиксель", callback_data="style_pixel")
+    b.button(text="✨ Минимализм", callback_data="style_minimalist")
+    b.button(text="🎲 Случайный", callback_data="style_random")
+    b.button(text="🔙 Назад", callback_data="back")
+    b.adjust(2, 2, 2, 2, 2, 1)
     return b.as_markup()
 
 
@@ -573,9 +579,25 @@ async def choose_style(cb: CallbackQuery, state: FSMContext):
     await state.update_data(style=style)
     await state.set_state(Form.waiting_description)
     lang = get_user_language(cb.from_user.id)
+
+    style_names = {
+        "cyber": "💻 Киберпанк",
+        "anime": "🌸 Аниме",
+        "fantasy": "🧙 Фэнтези",
+        "realistic": "🎨 Реализм",
+        "watercolor": "🖌️ Акварель",
+        "gothic": "🌙 Готика",
+        "steampunk": "⚙️ Стимпанк",
+        "pixel": "🖼️ Пиксель",
+        "minimalist": "✨ Минимализм",
+        "random": "🎲 Случайный"
+    }
+
     await edit_or_answer(
         cb,
-        "📝 Напиши описание (или /skip):\nПример: 'для стримера, люблю космос'",
+        f"✅ Выбран стиль: **{style_names.get(style, style)}**\n\n"
+        "📝 Напиши описание (или /skip):\n"
+        "Пример: 'для стримера, люблю космос'",
         None
     )
     await cb.answer()
@@ -591,7 +613,7 @@ async def process_desc(msg: Message, state: FSMContext):
     lang = get_user_language(msg.from_user.id)
 
     data = await state.get_data()
-    style = data.get("style", "cool")
+    style = data.get("style", "random")
     gender = data.get("gender", "female")
 
     if msg.text == "/skip":
@@ -610,8 +632,25 @@ async def process_desc(msg: Message, state: FSMContext):
         await loading.delete()
 
         gender_text = "👩 Женская" if gender == "female" else "👨 Мужская"
-        await msg.answer(
-            f"🎨 **Генерирую {gender_text.lower()} аватарку...**\n⏳ до 30 сек\n📝 Описание: {description if description else 'без описания'}")
+
+        style_names = {
+            "cyber": "💻 Киберпанк",
+            "anime": "🌸 Аниме",
+            "fantasy": "🧙 Фэнтези",
+            "realistic": "🎨 Реализм",
+            "watercolor": "🖌️ Акварель",
+            "gothic": "🌙 Готика",
+            "steampunk": "⚙️ Стимпанк",
+            "pixel": "🖼️ Пиксель",
+            "minimalist": "✨ Минимализм",
+            "random": "🎲 Случайный"
+        }
+        style_name = style_names.get(style, "Случайный")
+
+        await msg.answer(f"🎨 **Генерирую {gender_text.lower()} аватарку...**\n"
+                         f"📝 Стиль: {style_name}\n"
+                         f"⏳ до 30 сек\n"
+                         f"📝 Описание: {description if description else 'без описания'}")
 
         if gender == "female":
             avatar = await gen_avatar_female(nick, description, style)
@@ -621,6 +660,7 @@ async def process_desc(msg: Message, state: FSMContext):
         text = f"🎯 **{nick}**\n🔐 Пароль: `{password}`\n{gender_text} аватарка"
         if description:
             text += f"\n📝 Описание: {description[:50]}..."
+        text += f"\n🎨 Стиль: {style_name}"
         text += "\n💾 Сохранено в историю"
 
         if avatar:
@@ -672,6 +712,19 @@ async def history(cb: CallbackQuery):
         await cb.answer()
         return
 
+    style_names = {
+        "cyber": "💻",
+        "anime": "🌸",
+        "fantasy": "🧙",
+        "realistic": "🎨",
+        "watercolor": "🖌️",
+        "gothic": "🌙",
+        "steampunk": "⚙️",
+        "pixel": "🖼️",
+        "minimalist": "✨",
+        "random": "🎲"
+    }
+
     text = i18n.get("history_title", lang) + "\n\n"
     for i, n in enumerate(history, 1):
         text += f"{i}. `{n.nick}`"
@@ -680,6 +733,8 @@ async def history(cb: CallbackQuery):
         if n.gender:
             gender_icon = "👩" if n.gender == "female" else "👨"
             text += f" | {gender_icon}"
+        style_icon = style_names.get(n.style, "🎨")
+        text += f" | {style_icon}"
         if n.description:
             text += f"\n   📝 {n.description[:30]}..."
         text += f"\n   🕐 {n.created_at.strftime('%d.%m.%Y %H:%M')}\n"
