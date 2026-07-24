@@ -5,6 +5,7 @@ import secrets
 import string
 import random
 import json
+import re
 import aiohttp
 from datetime import datetime
 from typing import Optional, List
@@ -86,7 +87,9 @@ class I18n:
             "generating": "🔄 Генерирую... ⏳ 5-10 сек",
             "avatar_generating": "🎨 Генерирую аватарку... ⏳ до 30 сек",
             "password_result": "🔐 Пароль: `{password}`",
-            "history_title": "📜 История (последние 10):"
+            "history_title": "📜 История (последние 10):",
+            "choose_gender": "👤 Выбери пол / Choose gender:",
+            "choose_style": "🎨 Выбери стиль:"
         }
         en = {
             "welcome": "👋 Hello, {name}!\n\n🤖 **CyberNick AI** — nickname & avatar generator!\n\n⭐ **3 free generations per day**\n💰 10 Stars = +3 generations",
@@ -104,7 +107,9 @@ class I18n:
             "generating": "🔄 Generating... ⏳ 5-10 sec",
             "avatar_generating": "🎨 Generating avatar... ⏳ up to 30 sec",
             "password_result": "🔐 Password: `{password}`",
-            "history_title": "📜 History (last 10):"
+            "history_title": "📜 History (last 10):",
+            "choose_gender": "👤 Choose gender:",
+            "choose_style": "🎨 Choose style:"
         }
         with open("locales/ru.json", 'w', encoding='utf-8') as f:
             json.dump(ru, f, ensure_ascii=False, indent=2)
@@ -156,6 +161,7 @@ class Nick(Base):
     nick = Column(String(255), nullable=False)
     password = Column(String(255))
     style = Column(String(50))
+    gender = Column(String(10))  # Добавляем поле для пола
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -186,9 +192,9 @@ def create_user_db(telegram_id: int, username: str = None, first_name: str = Non
         return user
 
 
-def save_nick_db(user_id: int, nick: str, password: str = None, style: str = None):
+def save_nick_db(user_id: int, nick: str, password: str = None, style: str = None, gender: str = None):
     with Session() as db:
-        record = Nick(user_id=user_id, nick=nick, password=password, style=style)
+        record = Nick(user_id=user_id, nick=nick, password=password, style=style, gender=gender)
         db.add(record)
         db.commit()
         return True
@@ -242,46 +248,64 @@ def gen_password(length: int = 16) -> str:
 
 
 async def gen_nick_ai(style: str = "cool") -> str:
+    """Генерирует ник ТОЛЬКО на латинице"""
     if not OPENAI_API_KEY:
-        return f"{random.choice(['Cyber', 'Neon'])}{random.randint(10, 99)}"
+        return f"{random.choice(['Cyber', 'Neon', 'Shadow'])}{random.randint(10, 99)}"
 
     styles = {
-        "cool": "крутой, киберпанк",
-        "anime": "аниме, японский",
-        "fantasy": "фэнтези, магия"
+        "cool": "cool, cyberpunk, english, latin letters only, no cyrillic",
+        "anime": "anime, japanese style, english, latin letters only, no cyrillic",
+        "fantasy": "fantasy, magic, english, latin letters only, no cyrillic"
     }
     client = AsyncOpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL, timeout=30)
     try:
         resp = await client.chat.completions.create(
             model=OPENAI_MODEL,
             messages=[
-                {"role": "system", "content": "Ты генератор ников. Отвечай только одним ником."},
+                {"role": "system",
+                 "content": "You are a nickname generator. Reply with ONLY ONE nickname. Use ONLY latin letters (a-z, A-Z), numbers and symbols _ - . No cyrillic letters!"},
                 {"role": "user",
-                 "content": f"Придумай 1 ник в стиле {styles.get(style, 'крутой')}. Длина 5-20 символов."}
+                 "content": f"Generate 1 unique nickname in style {styles.get(style, 'cool')}. Length 5-20 characters. Use only latin letters, numbers and symbols. Reply with ONLY the nickname."}
             ],
             temperature=0.9,
             max_tokens=30
         )
         nick = resp.choices[0].message.content.strip()
-        if len(nick) > 30 or not nick:
-            return f"{random.choice(['Cyber', 'Neon'])}{random.randint(10, 99)}"
+        # Очищаем от запрещенных символов (оставляем только латиницу, цифры, _ - .)
+        nick = re.sub(r'[^a-zA-Z0-9_\-.]', '', nick)
+        if len(nick) > 30 or len(nick) < 3:
+            return f"{random.choice(['Cyber', 'Neon', 'Shadow', 'Phoenix', 'Nova'])}{random.randint(10, 99)}"
         return nick
     except Exception as e:
         logger.error(f"AI error: {e}")
-        return f"{random.choice(['Cyber', 'Neon'])}{random.randint(10, 99)}"
+        return f"{random.choice(['Cyber', 'Neon', 'Shadow', 'Phoenix', 'Nova'])}{random.randint(10, 99)}"
 
 
-async def gen_avatar(nick: str) -> Optional[bytes]:
-    """Генерация аватарки через Pollinations.ai (бесплатно, без токена)"""
-    prompt = f"Avatar for {nick}, digital art, vibrant"
-    url = f"https://image.pollinations.ai/prompt/{prompt}?width=512&height=512"
+async def gen_avatar_female(nick: str) -> Optional[bytes]:
+    """Генерирует женскую аватарку"""
+    prompt = f"Beautiful female avatar, girl, woman, gamer, named {nick}, digital art, vibrant, anime style, high quality, portrait, cute, stylish, pink and purple colors"
+    url = f"https://image.pollinations.ai/prompt/{prompt}?width=512&height=512&nologo=true"
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=30) as resp:
                 if resp.status == 200:
                     return await resp.read()
     except Exception as e:
-        logger.error(f"Avatar error: {e}")
+        logger.error(f"Female avatar error: {e}")
+    return None
+
+
+async def gen_avatar_male(nick: str) -> Optional[bytes]:
+    """Генерирует мужскую аватарку"""
+    prompt = f"Cool male avatar, boy, man, gamer, named {nick}, digital art, vibrant, anime style, high quality, portrait, stylish, blue and green colors"
+    url = f"https://image.pollinations.ai/prompt/{prompt}?width=512&height=512&nologo=true"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=30) as resp:
+                if resp.status == 200:
+                    return await resp.read()
+    except Exception as e:
+        logger.error(f"Male avatar error: {e}")
     return None
 
 
@@ -322,6 +346,15 @@ def style_kb(lang: str = "ru") -> InlineKeyboardMarkup:
     return b.as_markup()
 
 
+def gender_kb(lang: str = "ru") -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="👩 Девушка / Girl", callback_data="gender_female")
+    b.button(text="👨 Парень / Boy", callback_data="gender_male")
+    b.button(text="🔙 Назад", callback_data="back")
+    b.adjust(2, 1)
+    return b.as_markup()
+
+
 def lang_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text="🇷🇺 Русский", callback_data="lang_ru")
@@ -333,6 +366,7 @@ def lang_kb() -> InlineKeyboardMarkup:
 
 # ==================== СОСТОЯНИЯ ====================
 class Form(StatesGroup):
+    waiting_gender = State()
     waiting_style = State()
     waiting_description = State()
 
@@ -391,8 +425,19 @@ async def gen_ai_start(cb: CallbackQuery, state: FSMContext):
     if not use_generation_db(cb.from_user.id):
         await cb.answer(i18n.get("limit_exceeded", lang), show_alert=True)
         return
+    await state.set_state(Form.waiting_gender)
+    await edit_or_answer(cb, i18n.get("choose_gender", lang), gender_kb(lang))
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("gender_"))
+async def choose_gender(cb: CallbackQuery, state: FSMContext):
+    gender = cb.data.split("_")[1]  # female или male
+    await state.update_data(gender=gender)
     await state.set_state(Form.waiting_style)
-    await edit_or_answer(cb, "🎨 Выбери стиль:", style_kb(lang))
+    user = get_user_db(cb.from_user.id)
+    lang = user.language if user else "ru"
+    await edit_or_answer(cb, i18n.get("choose_style", lang), style_kb(lang))
     await cb.answer()
 
 
@@ -418,6 +463,7 @@ async def process_desc(msg: Message, state: FSMContext):
 
     data = await state.get_data()
     style = data.get("style", "cool")
+    gender = data.get("gender", "female")
 
     if msg.text == "/skip":
         desc = "случайный"
@@ -427,17 +473,25 @@ async def process_desc(msg: Message, state: FSMContext):
     loading = await msg.answer(i18n.get("generating", lang))
 
     try:
+        # Генерируем ник (только латиница)
         nick = await gen_nick_ai(style)
         password = gen_password(12)
 
-        save_nick_db(user.id, nick, password, style)
+        # Сохраняем с указанием пола
+        save_nick_db(user.id, nick, password, style, gender)
 
         await loading.delete()
-        await msg.answer(i18n.get("avatar_generating", lang))
 
-        avatar = await gen_avatar(nick)
+        gender_text = "👩 Женская" if gender == "female" else "👨 Мужская"
+        await msg.answer(f"🎨 **Генерирую {gender_text.lower()} аватарку...**\n⏳ до 30 сек")
 
-        text = f"🎯 **{nick}**\n🔐 Пароль: `{password}`"
+        # Генерируем аватарку в зависимости от пола
+        if gender == "female":
+            avatar = await gen_avatar_female(nick)
+        else:
+            avatar = await gen_avatar_male(nick)
+
+        text = f"🎯 **{nick}**\n🔐 Пароль: `{password}`\n{gender_text} аватарка\n💾 Сохранено в историю"
 
         if avatar:
             await msg.answer_photo(
@@ -487,6 +541,9 @@ async def history(cb: CallbackQuery):
         text += f"{i}. `{n.nick}`"
         if n.password:
             text += f" | Пароль: `{n.password}`"
+        if n.gender:
+            gender_icon = "👩" if n.gender == "female" else "👨"
+            text += f" | {gender_icon}"
         text += f"\n   🕐 {n.created_at.strftime('%d.%m.%Y %H:%M')}\n"
     await edit_or_answer(cb, text, main_kb(lang))
     await cb.answer()
